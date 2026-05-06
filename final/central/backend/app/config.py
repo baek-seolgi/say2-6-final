@@ -32,7 +32,7 @@ ECG_SERVICE_URL = os.getenv("ECG_SERVICE_URL", "http://13.124.117.190:8000")
 CXR_SERVICE_URL = os.getenv("CXR_SERVICE_URL", "http://3.35.133.73:8000")
 LAB_SERVICE_URL = os.getenv(
     "LAB_SERVICE_URL",
-    "https://blood5-api-production.up.railway.app",
+    "http://52.79.251.216:8000",
 )
 
 # 6시간 후 악화 예측 (XGBoost 5-앙상블)
