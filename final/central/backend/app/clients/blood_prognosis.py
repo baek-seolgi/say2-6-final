@@ -2,8 +2,8 @@
 혈액검사 6시간 후 악화 예측 서비스 클라이언트.
 
 [이 파일이 하는 일]
-Lab-svc(현재 상태 해석)와 별도로, blood-prognosis 서비스(XGBoost 5개 앙상블)에
-환자의 현재 lab 값을 보내 6시간 후 악화 확률을 받아온다.
+Lab-svc 내부로 통합된 prognosis 모듈(XGBoost 5개 앙상블)에 환자의 현재 lab 값을
+보내 6시간 후 악화 확률을 받아온다. Lab-svc :8000/predict_6h 엔드포인트.
 
 [입력]  lab_loader가 추출한 LabValues dict 중 10개 feature
         (creatinine, glucose, hemoglobin, lactate, platelet, potassium,
@@ -76,7 +76,7 @@ async def predict_6h(lab_values: dict[str, float]) -> dict[str, Any] | None:
         logger.info("[prognosis] 입력 lab 값 없음 — skip")
         return None
 
-    endpoint = f"{BLOOD_PROGNOSIS_URL.rstrip('/')}/predict"
+    endpoint = f"{BLOOD_PROGNOSIS_URL.rstrip('/')}/predict_6h"
     logger.info(f"[prognosis] POST {endpoint} (features={list(payload.keys())})")
 
     try:

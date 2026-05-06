@@ -35,8 +35,10 @@ LAB_SERVICE_URL = os.getenv(
     "https://blood5-api-production.up.railway.app",
 )
 
-# 6시간 후 악화 예측 (blood_docker XGBoost — Lab-svc와 같은 EC2 사이드카, 포트 8001)
-BLOOD_PROGNOSIS_URL = os.getenv("BLOOD_PROGNOSIS_URL", "")
+# 6시간 후 악화 예측 (XGBoost 5-앙상블)
+# Lab-svc 내부로 통합됨 — 동일 컨테이너 8000 포트의 /predict_6h 엔드포인트.
+# (이전: 별도 blood-prognosis 컨테이너 8001 포트)
+BLOOD_PROGNOSIS_URL = os.getenv("BLOOD_PROGNOSIS_URL", "http://52.79.251.216:8000")
 
 # 모달 호출 타임아웃 (초)
 MODAL_HTTP_TIMEOUT = float(os.getenv("MODAL_HTTP_TIMEOUT", "60.0"))
