@@ -6,7 +6,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 소스 복사
+# 소스 복사 (prognosis/final_models.pkl 포함)
 COPY . .
 
 # 비-root 사용자
