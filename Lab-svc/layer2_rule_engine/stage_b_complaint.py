@@ -17,23 +17,21 @@ from thresholds import NORMAL_RANGES
 
 # ── Tier 분류 ─────────────────────────────────────────────────────
 TIER2_FEATURES: set[str] = {"ast", "albumin", "lactate", "calcium"}
-TIER3_FEATURES: set[str] = {"troponin_t", "bnp", "amylase"}
+# 심장 마커(troponin_t, ntprobnp, ck_mb)는 이제 수치 필드로 받음 → Tier 3 제외
+TIER3_FEATURES: set[str] = {"amylase"}
 
 # Tier 3 항목의 임상적 중요성 설명
 TIER3_CLINICAL_IMPORTANCE: dict[str, str] = {
-    "troponin_t": "트로포닌 T는 심근 손상의 가장 민감한 바이오마커로, 급성 관상동맥 증후군(ACS) 진단에 필수적입니다.",
-    "bnp": "BNP는 심부전 진단 및 중증도 평가의 핵심 바이오마커로, 호흡곤란의 심인성 원인 감별에 중요합니다.",
     "amylase": "아밀라아제는 급성 췌장염 진단의 핵심 검사로, 상복부 통증과 구토 동반 시 반드시 측정해야 합니다.",
 }
 
 # Indicator 이름 → Feature 이름 매핑 (역방향)
+# troponin_t / ntprobnp는 이제 수치로 받으므로 indicator 매핑 불필요
 _FEATURE_TO_INDICATOR: dict[str, str] = {
     "ast": "has_ast",
     "albumin": "has_albumin",
     "lactate": "has_lactate",
     "calcium": "has_calcium",
-    "troponin_t": "has_troponin_t",
-    "bnp": "has_bnp",
     "amylase": "has_amylase",
 }
 
@@ -43,8 +41,10 @@ _FEATURE_TO_INDICATOR: dict[str, str] = {
 #   check_type: "value" = 수치 비교, "indicator" = 측정 여부만 확인
 PROFILE_PRIORITY_CHECKS: dict[str, list[tuple[str, str]]] = {
     "CARDIAC": [
-        ("troponin_t", "indicator"),
-        ("bnp", "indicator"),
+        # 심장 마커 — 이제 수치로 검사 (NSTEMI/CHF 확진)
+        ("troponin_t", "value"),
+        ("ntprobnp", "value"),
+        ("ck_mb", "value"),
         ("potassium", "value"),
         ("glucose", "value"),
         ("creatinine", "value"),
@@ -72,6 +72,9 @@ PROFILE_PRIORITY_CHECKS: dict[str, list[tuple[str, str]]] = {
         ("calcium", "value"),
     ],
     "RESPIRATORY": [
+        # SOB/호흡곤란 → CHF vs 폐 질환 감별 핵심
+        ("ntprobnp", "value"),    # CHF 강력 시사 (호흡곤란의 심인성 원인)
+        ("troponin_t", "value"),  # CHF 트리거 NSTEMI 배제
         ("wbc", "value"),
         ("lactate", "value"),
         ("hemoglobin", "value"),
@@ -112,28 +115,12 @@ def _severity_by_level(value: float, mild_thresh: float, moderate_thresh: float,
 
 
 def _check_cardiac(values: dict, indicators: dict) -> List[Finding]:
-    """CARDIAC Profile 규칙 세트 (6개 규칙)."""
+    """CARDIAC Profile 규칙 세트.
+
+    심장 마커(troponin_t, ntprobnp, ck_mb)는 Stage A의 critical_flag에서
+    이미 자동 처리되므로 여기서 중복 체크 안 함.
+    """
     findings: List[Finding] = []
-
-    # P1: Troponin T (indicator only — Tier 3)
-    if indicators.get("has_troponin_t", 0) == 1:
-        findings.append(Finding(
-            name="cardiac_troponin_t_measured",
-            detail="트로포닌 T 측정됨 — ACS(급성 관상동맥 증후군) 감별 진행 가능",
-            severity="moderate",
-            recommendation="트로포닌 T 수치에 따라 ACS 프로토콜 적용",
-            category="primary",
-        ))
-
-    # P2: BNP (indicator only — Tier 3)
-    if indicators.get("has_bnp", 0) == 1:
-        findings.append(Finding(
-            name="cardiac_bnp_measured",
-            detail="BNP 측정됨 — 심부전 감별 진행 가능",
-            severity="moderate",
-            recommendation="BNP 수치에 따라 심부전 치료 프로토콜 적용",
-            category="primary",
-        ))
 
     # P3: K+
     k = values.get("potassium")
@@ -459,7 +446,10 @@ def _check_renal(values: dict, indicators: dict) -> List[Finding]:
 
 
 def _check_respiratory(values: dict, indicators: dict) -> List[Finding]:
-    """RESPIRATORY Profile 규칙 세트 (3개 규칙)."""
+    """RESPIRATORY Profile 규칙 세트.
+
+    심장 마커(NT-proBNP, troponin_t)는 Stage A에서 자동 처리.
+    """
     findings: List[Finding] = []
 
     # P1: WBC

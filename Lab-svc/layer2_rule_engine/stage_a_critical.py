@@ -45,6 +45,16 @@ _CRITICAL_DETAILS: dict[str, dict[str, str]] = {
         "detail": "혈소판 {value} {unit} — 중증 혈소판감소증으로 자발 출혈 위험이 있습니다.",
         "recommendation": "혈소판 수혈 준비, 출혈 징후 관찰, DIC 감별 검사",
     },
+    # 심장 마커 — 수치 설명만 제공. 처치 권고는 중앙(Bedrock)이 종합 판단 시 생성.
+    "troponin_high": {
+        "detail": "트로포닌 T {value} {unit} — 급성 심근손상으로 NSTEMI/STEMI가 의심됩니다.",
+    },
+    "ntprobnp_high": {
+        "detail": "NT-proBNP {value} {unit} — 중증 심부전 악화가 강력히 시사됩니다.",
+    },
+    "ck_mb_high": {
+        "detail": "CK-MB {value} {unit} — 심근경색이 강력히 시사됩니다.",
+    },
 }
 
 

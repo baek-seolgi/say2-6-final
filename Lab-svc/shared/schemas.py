@@ -9,7 +9,11 @@ from pydantic import BaseModel
 # ── 입력 스키마 ───────────────────────────────────────────────────
 
 class LabValues(BaseModel):
-    """12개 Value_Feature — 모두 Optional (미측정 허용)"""
+    """15개 Value_Feature — 모두 Optional (미측정 허용)
+
+    기본 12 + 심장 마커 3 (troponin_t / ntprobnp / ck_mb)
+    심장 마커는 결측률 높지만 NSTEMI/CHF 확진에 결정적이라 추가.
+    """
 
     wbc: Optional[float] = None          # K/uL
     hemoglobin: Optional[float] = None   # g/dL
@@ -23,6 +27,9 @@ class LabValues(BaseModel):
     albumin: Optional[float] = None      # g/dL
     lactate: Optional[float] = None      # mmol/L
     calcium: Optional[float] = None      # mg/dL
+    troponin_t: Optional[float] = None   # ng/mL — NSTEMI 확진
+    ntprobnp: Optional[float] = None     # pg/mL — CHF 정량
+    ck_mb: Optional[float] = None        # ng/mL — 심근손상 보조
 
 
 class PatientInfo(BaseModel):

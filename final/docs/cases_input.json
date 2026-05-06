@@ -1,0 +1,305 @@
+{
+  "cases": [
+    {
+      "case_no": 1,
+      "case_label": "Case 1 — 원00 / Palpitations, NEW A-FIB",
+      "identifiers": {
+        "subject_id": "19041043",
+        "patient_id": "1072",
+        "encounter_id": "1073",
+        "fhir_report_id": "1142"
+      },
+      "triage_form": {
+        "patient": {
+          "age": 30,
+          "gender": "male",
+          "name": "원00"
+        },
+        "vitals": {
+          "hr": 114,
+          "sbp": 129,
+          "dbp": 95,
+          "spo2": 100,
+          "rr": 18,
+          "temp": 36.7,
+          "gcs": 15
+        },
+        "chief_complaint": {
+          "text": "Palpitations, NEW A-FIB",
+          "onset_minutes_ago": 90
+        },
+        "past_history": [
+          {
+            "text": "Atrial fibrillation"
+          }
+        ]
+      },
+      "modal_inputs": {
+        "ECG": {
+          "source": "S3 WFDB (MIMIC-IV-ECG)",
+          "record_path": "s3://say2-6team/mimic/ecg/waveforms/files/p1904/p19041043/s45238325/45238325",
+          "files": [
+            "s3://say2-6team/mimic/ecg/waveforms/files/p1904/p19041043/s45238325/45238325.dat",
+            "s3://say2-6team/mimic/ecg/waveforms/files/p1904/p19041043/s45238325/45238325.hea"
+          ]
+        },
+        "CXR": {
+          "source": "S3 JPG (MIMIC-CXR-JPG)",
+          "image_path": "s3://say1-pre-project-5/data/mimic-cxr-jpg/files/p19/p19041043/s55653653/93fb38fb-c721d253-e194385f-61c955d3-f9a90736.jpg"
+        },
+        "LAB": {
+          "source": "S3 Select",
+          "bucket": "say1-pre-project-2",
+          "key": "mimic-iv/hosp/labevents.csv.gz",
+          "filter_subject_id": "19041043",
+          "filter_charttime": "2189-06-21"
+        }
+      },
+      "expected_modal_flow": [
+        "ECG"
+      ],
+      "final_diagnosis": "신규 심방세동 (NEW Atrial Fibrillation)",
+      "risk_level": "urgent"
+    },
+    {
+      "case_no": 2,
+      "case_label": "Case 2 — 홍00 / Shortness of breath",
+      "identifiers": {
+        "subject_id": "13715870",
+        "patient_id": "1083",
+        "encounter_id": "1084",
+        "fhir_report_id": null
+      },
+      "triage_form": {
+        "patient": {
+          "age": 73,
+          "gender": "male",
+          "name": "홍00"
+        },
+        "vitals": {
+          "hr": 61,
+          "sbp": 122,
+          "dbp": 65,
+          "spo2": 98,
+          "rr": 34,
+          "temp": 36.5,
+          "gcs": 15
+        },
+        "chief_complaint": {
+          "text": "Shortness of breath",
+          "onset_minutes_ago": 720
+        },
+        "past_history": [
+          {
+            "text": "Chronic diastolic heart failure"
+          },
+          {
+            "text": "Atrial fibrillation"
+          },
+          {
+            "text": "Aortocoronary bypass status"
+          },
+          {
+            "text": "Heart valve replacement"
+          },
+          {
+            "text": "Hyperlipidemia"
+          },
+          {
+            "text": "Essential hypertension"
+          }
+        ]
+      },
+      "modal_inputs": {
+        "ECG": {
+          "source": "S3 WFDB (MIMIC-IV-ECG)",
+          "record_path": "s3://say2-6team/mimic/ecg/waveforms/files/p1371/p13715870/s48224691/48224691",
+          "files": [
+            "s3://say2-6team/mimic/ecg/waveforms/files/p1371/p13715870/s48224691/48224691.dat",
+            "s3://say2-6team/mimic/ecg/waveforms/files/p1371/p13715870/s48224691/48224691.hea"
+          ]
+        },
+        "CXR": {
+          "source": "S3 JPG (MIMIC-CXR-JPG)",
+          "image_path": "s3://say1-pre-project-5/data/mimic-cxr-jpg/files/p13/p13715870/s53940823/a3fd0c8a-75e1b24c-12028360-df56d3d4-42ee122e.jpg"
+        },
+        "LAB": {
+          "source": "S3 Select",
+          "bucket": "say1-pre-project-2",
+          "key": "mimic-iv/hosp/labevents.csv.gz",
+          "filter_subject_id": "13715870",
+          "filter_charttime": "2174-01-04"
+        }
+      },
+      "expected_modal_flow": [
+        "CXR",
+        "LAB"
+      ],
+      "final_diagnosis": "만성 이완성 심부전 급성 악화 (ADHF)",
+      "risk_level": "critical"
+    },
+    {
+      "case_no": 3,
+      "case_label": "Case 3 — 이00 / Hematuria",
+      "identifiers": {
+        "subject_id": "15638163",
+        "patient_id": "1099",
+        "encounter_id": "1100",
+        "fhir_report_id": null
+      },
+      "triage_form": {
+        "patient": {
+          "age": 34,
+          "gender": "male",
+          "name": "이00"
+        },
+        "vitals": {
+          "hr": 79,
+          "sbp": 109,
+          "dbp": 75,
+          "spo2": 100,
+          "rr": 16,
+          "temp": 37.2,
+          "gcs": 15
+        },
+        "chief_complaint": {
+          "text": "Hematuria",
+          "onset_minutes_ago": 1440
+        },
+        "past_history": [
+          {
+            "text": "End stage renal disease on dialysis"
+          },
+          {
+            "text": "Chronic kidney disease"
+          }
+        ]
+      },
+      "modal_inputs": {
+        "ECG": {
+          "source": "S3 WFDB (MIMIC-IV-ECG)",
+          "record_path": "s3://say2-6team/mimic/ecg/waveforms/files/p1563/p15638163/s42679999/42679999",
+          "files": [
+            "s3://say2-6team/mimic/ecg/waveforms/files/p1563/p15638163/s42679999/42679999.dat",
+            "s3://say2-6team/mimic/ecg/waveforms/files/p1563/p15638163/s42679999/42679999.hea"
+          ]
+        },
+        "CXR": {
+          "source": "S3 JPG (MIMIC-CXR-JPG)",
+          "image_path": "s3://say1-pre-project-5/data/mimic-cxr-jpg/files/p15/p15638163/s53577003/9f64814d-438562ea-6e1930ec-a7713602-c61d382e.jpg"
+        },
+        "LAB": {
+          "source": "S3 Select",
+          "bucket": "say1-pre-project-2",
+          "key": "mimic-iv/hosp/labevents.csv.gz",
+          "filter_subject_id": "15638163",
+          "filter_charttime": "2136-09-27"
+        }
+      },
+      "expected_modal_flow": [
+        "LAB",
+        "ECG"
+      ],
+      "final_diagnosis": "중증 고칼륨혈증 (ESRD 투석 환자)",
+      "risk_level": "critical"
+    },
+    {
+      "case_no": 4,
+      "case_label": "Case 4 — 양00 / Chest pain",
+      "identifiers": {
+        "subject_id": "18230098",
+        "patient_id": "1111",
+        "encounter_id": "1112",
+        "fhir_report_id": null
+      },
+      "triage_form": {
+        "patient": {
+          "age": 86,
+          "gender": "female",
+          "name": "양00"
+        },
+        "vitals": {
+          "hr": 72,
+          "sbp": 154,
+          "dbp": 46,
+          "spo2": 98,
+          "rr": 18,
+          "temp": 36.4,
+          "gcs": 13,
+          "pain": 10
+        },
+        "chief_complaint": {
+          "text": "Chest pain",
+          "onset_minutes_ago": 240
+        },
+        "past_history": [
+          {
+            "text": "Chronic systolic heart failure"
+          },
+          {
+            "text": "Chronic diastolic heart failure"
+          },
+          {
+            "text": "End stage renal disease on dialysis"
+          },
+          {
+            "text": "Old myocardial infarction"
+          },
+          {
+            "text": "Atrial fibrillation"
+          },
+          {
+            "text": "Diabetes mellitus"
+          }
+        ]
+      },
+      "modal_inputs": {
+        "ECG": {
+          "source": "S3 WFDB (MIMIC-IV-ECG)",
+          "record_path": "s3://say2-6team/mimic/ecg/waveforms/files/p1823/p18230098/s46745774/46745774",
+          "files": [
+            "s3://say2-6team/mimic/ecg/waveforms/files/p1823/p18230098/s46745774/46745774.dat",
+            "s3://say2-6team/mimic/ecg/waveforms/files/p1823/p18230098/s46745774/46745774.hea"
+          ]
+        },
+        "CXR": {
+          "source": "S3 JPG (MIMIC-CXR-JPG)",
+          "image_path": "s3://say1-pre-project-5/data/mimic-cxr-jpg/files/p18/p18230098/s58964529/ef582e36-fe63fc3f-a5d512ae-9e2828c0-88d3b59d.jpg"
+        },
+        "LAB": {
+          "source": "S3 Select",
+          "bucket": "say1-pre-project-2",
+          "key": "mimic-iv/hosp/labevents.csv.gz",
+          "filter_subject_id": "18230098",
+          "filter_charttime": "2151-08-18"
+        }
+      },
+      "expected_modal_flow": [
+        "ECG",
+        "CXR",
+        "LAB"
+      ],
+      "final_diagnosis": "NSTEMI 의심 + 급성 심부전 악화",
+      "risk_level": "critical"
+    }
+  ],
+  "common": {
+    "s3_buckets": {
+      "ECG": "s3://say2-6team/mimic/ecg/waveforms/",
+      "CXR": "s3://say1-pre-project-5/data/mimic-cxr-jpg/",
+      "LAB": "s3://say1-pre-project-2/mimic-iv/hosp/labevents.csv.gz",
+      "models": "s3://say2-6team/models/",
+      "rag_db": "s3://say2-6team/jeongin/note_rag.zip → pgvector 49,743 chunks"
+    },
+    "modal_endpoints": {
+      "ECG_svc": "http://52.79.251.216:8003",
+      "CXR_svc": "http://52.79.251.216:8002",
+      "LAB_svc": "http://52.79.251.216:8000",
+      "blood_prognosis_svc": "http://52.79.251.216:8001"
+    },
+    "bedrock_models": {
+      "report": "global.anthropic.claude-sonnet-4-6",
+      "embedding": "amazon.titan-embed-text-v2:0 (512차원)"
+    }
+  }
+}

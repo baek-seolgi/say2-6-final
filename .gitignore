@@ -36,3 +36,17 @@ frontend/dist/
 .vscode/
 *.swp
 .DS_Store
+
+# RAG ChromaDB (S3 zip으로 별도 공유, 372MB)
+final/central/backend/rag_db/
+
+# 외부 레포 복사본 (별도 저장소)
+_from_github/
+
+# IDE specs
+.kiro/
+
+# 임시 파일
+*.bak
+*.tmp
+.cache/

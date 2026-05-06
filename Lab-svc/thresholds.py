@@ -5,7 +5,7 @@
 코드 변경 없이 임계값을 조정할 수 있도록 딕셔너리로 관리한다.
 """
 
-# ── 12개 Value_Feature 임상 정상 범위 ──────────────────────────────
+# ── 15개 Value_Feature 임상 정상 범위 (12 + 심장 마커 3) ─────────
 NORMAL_RANGES: dict[str, dict] = {
     "wbc":        {"low": 4.5,  "high": 11.0,  "unit": "K/uL"},
     "hemoglobin": {"low": 12.0, "high": 17.5,  "unit": "g/dL"},
@@ -19,9 +19,13 @@ NORMAL_RANGES: dict[str, dict] = {
     "albumin":    {"low": 3.5,  "high": 5.5,   "unit": "g/dL"},
     "lactate":    {"low": 0.5,  "high": 2.0,   "unit": "mmol/L"},
     "calcium":    {"low": 8.5,  "high": 10.5,  "unit": "mg/dL"},
+    # 심장 마커 — NSTEMI/CHF 확진용
+    "troponin_t": {"low": 0.0,  "high": 0.01,  "unit": "ng/mL"},
+    "ntprobnp":   {"low": 0,    "high": 624,   "unit": "pg/mL"},
+    "ck_mb":      {"low": 0.0,  "high": 6.3,   "unit": "ng/mL"},
 }
 
-# ── 8개 Critical Flag 규칙 ─────────────────────────────────────────
+# ── 11개 Critical Flag 규칙 (기본 8 + 심장 마커 3) ───────────────
 CRITICAL_FLAGS: dict[str, dict] = {
     "potassium_high": {"feature": "potassium",  "op": ">", "value": 6.5, "flag": "심정지 위험"},
     "potassium_low":  {"feature": "potassium",  "op": "<", "value": 2.5, "flag": "치명적 부정맥 위험"},
@@ -31,9 +35,13 @@ CRITICAL_FLAGS: dict[str, dict] = {
     "lactate_high":   {"feature": "lactate",    "op": ">", "value": 4.0, "flag": "조직 저관류/쇼크"},
     "hemoglobin_low": {"feature": "hemoglobin", "op": "<", "value": 7.0, "flag": "수혈 고려"},
     "platelet_low":   {"feature": "platelet",   "op": "<", "value": 20,  "flag": "자발 출혈 위험"},
+    # 심장 마커
+    "troponin_high":  {"feature": "troponin_t", "op": ">", "value": 0.04, "flag": "급성 심근손상 (NSTEMI 의심)"},
+    "ntprobnp_high":  {"feature": "ntprobnp",   "op": ">", "value": 1800, "flag": "심부전 악화 (BNP 매우 높음)"},
+    "ck_mb_high":     {"feature": "ck_mb",      "op": ">", "value": 25,   "flag": "심근경색 강력 시사"},
 }
 
-# ── 12개 Feature 생리학적 유효 범위 (불가능한 값 필터링) ──────────
+# ── 15개 Feature 생리학적 유효 범위 (불가능한 값 필터링) ──────────
 VALID_RANGES: dict[str, dict] = {
     "wbc":        {"min": 0.1,  "max": 500},
     "hemoglobin": {"min": 1.0,  "max": 25.0},
@@ -47,4 +55,8 @@ VALID_RANGES: dict[str, dict] = {
     "albumin":    {"min": 0.5,  "max": 7.0},
     "lactate":    {"min": 0.1,  "max": 30.0},
     "calcium":    {"min": 3.0,  "max": 18.0},
+    # 심장 마커
+    "troponin_t": {"min": 0.0,  "max": 100.0},
+    "ntprobnp":   {"min": 0,    "max": 70000},
+    "ck_mb":      {"min": 0.0,  "max": 1000},
 }

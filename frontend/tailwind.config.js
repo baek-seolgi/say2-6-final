@@ -16,6 +16,23 @@ export default {
           border: "#1e2d3d",
         },
       },
+      fontFamily: {
+        sans: [
+          "Gulim", "굴림",
+          "Dotum", "돋움",
+          "Apple SD Gothic Neo",
+          "맑은 고딕", "Malgun Gothic",
+          "sans-serif",
+        ],
+        mono: [
+          "Dotum", "돋움",
+          "Consolas", "Menlo", "Monaco",
+          "Courier New", "monospace",
+        ],
+      },
+      boxShadow: {
+        "card": "0 1px 2px rgba(17,24,39,0.04), 0 1px 3px rgba(17,24,39,0.06)",
+      },
     },
   },
   plugins: [],

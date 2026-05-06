@@ -18,18 +18,22 @@ from layer1_input_processor.complaint_mapper import ComplaintMapper
 from shared.schemas import LabValues, PredictRequest, ProcessedInput
 from thresholds import VALID_RANGES
 
-# 12개 Value_Feature 이름 목록
+# 15개 Value_Feature 이름 목록 (12 + 심장 마커 3)
 VALUE_FEATURES: list[str] = [
     "wbc", "hemoglobin", "platelet", "creatinine", "bun",
     "sodium", "potassium", "glucose", "ast", "albumin",
     "lactate", "calcium",
+    # 심장 마커 — 결측률 높지만 측정 시 NSTEMI/CHF 확진에 결정적
+    "troponin_t", "ntprobnp", "ck_mb",
 ]
 
 # Tier 2 항목 (값 + indicator 사용)
 TIER2_FEATURES: set[str] = {"ast", "albumin", "lactate", "calcium"}
 
 # Tier 3 항목 (indicator만 사용 — LabValues에 수치 필드 없음)
-TIER3_FEATURES: set[str] = {"troponin_t", "bnp", "amylase"}
+# troponin_t / ntprobnp는 이제 수치 필드로 받으므로 Tier 3에서 제외.
+# amylase는 여전히 indicator-only.
+TIER3_FEATURES: set[str] = {"amylase"}
 
 # Indicator 대상 Feature 매핑
 INDICATOR_FEATURES: dict[str, str] = {
