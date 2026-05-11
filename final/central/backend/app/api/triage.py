@@ -168,6 +168,17 @@ async def submit_triage(form: TriageSubmission, background_tasks: BackgroundTask
       Vitals · Past History · AllergyIntolerance · MedicationStatement
     """
     try:
+        # Get ML models from app state
+        from fastapi import Request
+        from app.main import app
+        
+        ml_models_initial = getattr(app.state, 'ml_models_initial', None)
+        ml_models_followup = getattr(app.state, 'ml_models_followup', None)
+        ml_metadata_initial = getattr(app.state, 'ml_metadata_initial', None)
+        ml_metadata_followup = getattr(app.state, 'ml_metadata_followup', None)
+        cc_map = getattr(app.state, 'cc_map', None)
+        feature_extractor = getattr(app.state, 'feature_extractor', None)
+        
         # ── 1) Patient + Encounter (직렬, encounter_id 필요) ─
         patient_res = await fhir.create(
             "Patient", build_patient(form.patient.model_dump())
@@ -224,11 +235,21 @@ async def submit_triage(form: TriageSubmission, background_tasks: BackgroundTask
             "past_history": [h.text for h in form.past_history],
             "vitals": form.vitals.model_dump(),
         }
-        engine = FusionDecisionEngine(
+        
+        # Use HybridDecisionEngine with ML models
+        from app.agent.decision_engine import HybridDecisionEngine
+        
+        engine = HybridDecisionEngine(
             patient=central_patient,
             modalities_completed=[],
             inference_results=[],
             iteration=1,
+            ml_models_initial=ml_models_initial,
+            ml_models_followup=ml_models_followup,
+            ml_metadata_initial=ml_metadata_initial,
+            ml_metadata_followup=ml_metadata_followup,
+            cc_map=cc_map,
+            feature_extractor=feature_extractor,
         )
         decision = engine.decide()
         next_modalities = decision.get("next_modalities", [])

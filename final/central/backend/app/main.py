@@ -18,16 +18,74 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Global ML models and utilities for decision engine
+ml_models_initial = None
+ml_models_followup = None
+ml_metadata_initial = None
+ml_metadata_followup = None
+cc_map = None
+feature_extractor = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """앱 시작 시 DB 풀 초기화, 종료 시 정리."""
+    """앱 시작 시 DB 풀 초기화 및 ML 모델 로드, 종료 시 정리."""
+    global ml_models_initial, ml_models_followup, ml_metadata_initial, ml_metadata_followup
+    global cc_map, feature_extractor
+    
     # Startup
     try:
         await db.init_pool()
     except Exception as e:
         # DB 연결 실패해도 앱은 떠야 함 (FHIR 단독 동작 가능)
         logger.warning("Ops DB pool init 실패 (FHIR만 사용됨): %s", e)
+    
+    # Load ML models for decision engine
+    try:
+        from app.agent.hybrid_decision_engine import load_stratified_models
+        from app.agent.orchestrator_utils.cc_map import load_cc_map
+        from app.agent.orchestrator_utils.feature_extractor import load_feature_extractor
+        
+        logger.info("Loading ML models for decision engine...")
+        
+        # Load stratified models
+        ml_models_initial, ml_models_followup, ml_metadata_initial, ml_metadata_followup = load_stratified_models(
+            initial_dir='app/agent/models_stratified/initial',
+            followup_dir='app/agent/models_stratified/followup'
+        )
+        
+        logger.info(f"✓ Loaded ML models: initial={len(ml_models_initial)}, followup={len(ml_models_followup)}")
+        
+        # Load CC map
+        try:
+            cc_map = load_cc_map('data/chief_complaint_modality_map.parquet')
+            logger.info(f"✓ Loaded CC map: {cc_map.get_summary()['total_chief_complaints']} chief complaints")
+        except Exception as e:
+            logger.warning(f"CC map loading failed (will use fallback): {e}")
+            cc_map = None
+        
+        # Load feature extractor
+        try:
+            feature_extractor = load_feature_extractor(
+                cc_map_path='data/chief_complaint_modality_map.parquet',
+                metadata_path='app/agent/models_stratified/followup/metadata.pkl'
+            )
+            logger.info("✓ Loaded feature extractor")
+        except Exception as e:
+            logger.warning(f"Feature extractor loading failed (will use fallback): {e}")
+            feature_extractor = None
+        
+        # Store in app state for access in routes
+        app.state.ml_models_initial = ml_models_initial
+        app.state.ml_models_followup = ml_models_followup
+        app.state.ml_metadata_initial = ml_metadata_initial
+        app.state.ml_metadata_followup = ml_metadata_followup
+        app.state.cc_map = cc_map
+        app.state.feature_extractor = feature_extractor
+        
+    except Exception as e:
+        logger.error(f"Failed to load ML models: {e}")
+        logger.warning("Decision engine will use fallback mode")
 
     yield
 

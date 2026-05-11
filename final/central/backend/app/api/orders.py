@@ -510,9 +510,18 @@ async def _suggest_next_modality(encounter_id: str, patient_id: str) -> None:
     """
     try:
         from app.agent.tools import propose_order, get_encounter_context
-        from app.agent.decision_engine import FusionDecisionEngine
+        from app.agent.decision_engine import HybridDecisionEngine
         from app.db import encounters as ops_encounters
         from app.db import modal_results as ops_modal_results
+        from app.main import app
+
+        # Get ML models from app state
+        ml_models_initial = getattr(app.state, 'ml_models_initial', None)
+        ml_models_followup = getattr(app.state, 'ml_models_followup', None)
+        ml_metadata_initial = getattr(app.state, 'ml_metadata_initial', None)
+        ml_metadata_followup = getattr(app.state, 'ml_metadata_followup', None)
+        cc_map = getattr(app.state, 'cc_map', None)
+        feature_extractor = getattr(app.state, 'feature_extractor', None)
 
         # 현재 encounter 상태 수집 (FHIR — SR 목록만 필요)
         context = await get_encounter_context(encounter_id)
@@ -541,7 +550,7 @@ async def _suggest_next_modality(encounter_id: str, patient_id: str) -> None:
             "vitals": meta.get("vitals") or {},
         }
 
-        # 운영 DB에서 완료된 모달의 raw 결과 수집 → FusionDecisionEngine 입력 형식으로 변환
+        # 운영 DB에서 완료된 모달의 raw 결과 수집 → HybridDecisionEngine 입력 형식으로 변환
         # get_all_modal_results는 {"CXR": {...raw...}, "ECG": {...raw...}} 형태 반환.
         # ⚠ finding은 top-1만 보내면 ECG가 [afib, heart_failure, htn] 동시 검출 시 top1만 룰 매칭됨.
         #    감지된 모든 finding 이름을 공백 구분으로 합쳐서 substring 매칭이 누락 안 되게 함.
@@ -577,11 +586,17 @@ async def _suggest_next_modality(encounter_id: str, patient_id: str) -> None:
                 "summary": raw.get("summary", ""),
             })
 
-        engine = FusionDecisionEngine(
+        engine = HybridDecisionEngine(
             patient=patient_ctx,
             modalities_completed=completed_modalities,
             inference_results=inference_results,
             iteration=len(completed_modalities) + 1,
+            ml_models_initial=ml_models_initial,
+            ml_models_followup=ml_models_followup,
+            ml_metadata_initial=ml_metadata_initial,
+            ml_metadata_followup=ml_metadata_followup,
+            cc_map=cc_map,
+            feature_extractor=feature_extractor,
         )
         decision = engine.decide()
         next_modalities = decision.get("next_modalities", [])
