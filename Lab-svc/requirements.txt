@@ -1,0 +1,15 @@
+# Web framework (핵심 의존성만)
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+
+# 6시간 후 악화 예측 (prognosis 서브모듈, XGBoost 5-앙상블)
+pandas==2.3.3
+numpy==1.26.4
+xgboost==3.2.0
+scikit-learn==1.8.0
+
+# Testing
+pytest==8.2.0
+hypothesis==6.100.0
+httpx==0.27.0

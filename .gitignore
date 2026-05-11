@@ -1,0 +1,53 @@
+# 환경 설정
+.env
+*.env
+
+# 모델 파일
+*.pt
+*.onnx
+*.onnx.data
+
+# 데이터
+processed/
+ecg_waveforms/
+*.npy
+*.csv
+*.tar.gz
+
+# 로그
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Node
+node_modules/
+frontend/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# RAG ChromaDB (S3 zip으로 별도 공유, 372MB)
+final/central/backend/rag_db/
+final/central/backend/rag_db.bak.*/
+
+# 외부 레포 복사본 (별도 저장소)
+_from_github/
+
+# IDE specs
+.kiro/
+
+# 임시 파일
+*.bak
+*.tmp
+.cache/
