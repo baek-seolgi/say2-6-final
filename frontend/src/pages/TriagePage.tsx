@@ -18,7 +18,7 @@ import TriageQueueSidebar from "../components/triage/TriageQueueSidebar";
 import TriageActionFooter from "../components/triage/TriageActionFooter";
 
 import { DEMO_PATIENTS_50 } from "../data/triage_demo_50";
-import { DEMO_CASES_4 } from "../data/triage_demo_cases_4";
+import { DEMO_CASES_4, type DemoCasePatient } from "../data/triage_demo_cases_4";
 import { fetchMimicConditions } from "../lib/mimic-api";
 import {
   KTAS_META,
@@ -142,30 +142,131 @@ export default function TriagePage() {
     setSelectedId(null);
   }
 
-  function handleSave() {
-    // TODO: 백엔드 /triage/submit 연결
-    if (selectedId) {
-      setPatients((prev) =>
-        prev.map((p) =>
-          p.id === selectedId
-            ? {
-                ...p,
-                ...form,
-                vitals: form.vitals ?? p.vitals,
-                past_history: form.past_history ?? p.past_history,
-                status: "triage",
-              }
-            : p
-        )
-      );
-    }
-    alert("저장됨 (TODO: 백엔드 /triage/submit 연동)");
+  // 로컬 큐 상태만 갱신 (UI 즉시 반영)
+  function applyLocalQueueUpdate() {
+    if (!selectedId) return;
+    setPatients((prev) =>
+      prev.map((p) =>
+        p.id === selectedId
+          ? {
+              ...p,
+              ...form,
+              vitals: form.vitals ?? p.vitals,
+              past_history: form.past_history ?? p.past_history,
+              status: "triage",
+            }
+          : p
+      )
+    );
   }
 
-  function handleSubmit() {
-    handleSave();
-    // TODO: 실제로는 encounter_id 받아서 이동
-    navigate(`/dashboard?patient=${selectedId ?? ""}`);
+  // /triage/submit POST 페이로드 빌더
+  function buildSubmissionPayload() {
+    // 데모 케이스 선택 시 MIMIC 식별자(S3 경로) 포함 → 백엔드가 모달 호출 시 사용
+    const selected = patients.find((p) => p.id === selectedId);
+    const demo = (selected as DemoCasePatient | undefined)?.is_demo
+      ? (selected as DemoCasePatient)
+      : null;
+
+    // FHIR R4는 gender가 male/female/other/unknown 소문자만 허용
+    const fhirGender = form.sex === "M" ? "male" : form.sex === "F" ? "female" : "unknown";
+
+    return {
+      patient: {
+        name: form.name ?? "",
+        age: form.age ?? 0,
+        gender: fhirGender,
+      },
+      vitals: {
+        // 백엔드 VitalsForm 스키마: hr, sbp, dbp, spo2, rr, temp, gcs (모두 float, 필수)
+        hr:   form.vitals?.hr   ?? 0,
+        sbp:  form.vitals?.sbp  ?? 0,
+        dbp:  form.vitals?.dbp  ?? 0,
+        spo2: form.vitals?.spo2 ?? 0,
+        rr:   form.vitals?.rr   ?? 0,
+        temp: form.vitals?.bt   ?? 36.5,  // 프론트는 bt, 백엔드는 temp
+        gcs: 15,                          // 폼에 GCS 입력 없음 — 기본 정상치
+      },
+      chief_complaint: {
+        text: form.chief_complaint ?? "other",
+        detail: form.complaint_detail ?? null,
+        onset_minutes_ago: 0,
+      },
+      past_history: (form.past_history ?? []).map((code) => ({ text: code })),
+      allergies: form.allergies || null,
+      medications: form.medications || null,
+      notes: form.notes || null,
+      // 데모 케이스 → MIMIC 원본 식별자 (모달 호출 시 S3 경로로 사용됨)
+      mimic: demo
+        ? {
+            subject_id: demo.subject_id,
+            cxr_image_path: demo.cxr_s3_uri,
+            ecg_record_path: demo.ecg_record_path ?? null,
+          }
+        : null,
+    };
+  }
+
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit() {
+    console.log("[triage] handleSubmit 시작 - selectedId:", selectedId);
+    applyLocalQueueUpdate();
+
+    if (!selectedId) {
+      alert("환자를 먼저 선택해주세요.");
+      return;
+    }
+
+    setSubmitting(true);
+    const payload = buildSubmissionPayload();
+    console.log("[triage] payload:", payload);
+
+    try {
+      const res = await fetch("/triage/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      console.log("[triage] /triage/submit 응답:", res.status);
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status} ${text.slice(0, 200)}`);
+      }
+      const data = await res.json();
+      console.log("[triage] 응답 데이터:", data);
+
+      const encounterId: string | undefined = data?.encounter_id;
+      const patientId: string | undefined = data?.patient_id;
+      const primaryModality: string | undefined = data?.primary_modality;
+      const primarySrId: string | undefined = data?.service_request_id;
+      if (encounterId) {
+        const params = new URLSearchParams();
+        params.set("encounter_id", encounterId);
+        if (patientId) params.set("patient_id", patientId);
+        if (selectedId) params.set("patient", selectedId);
+        if (primaryModality) params.set("primary_modality", primaryModality);
+        if (primarySrId) params.set("primary_sr", primarySrId);
+        console.log("[triage] 대시보드로 이동:", `/dashboard?${params.toString()}`);
+        navigate(`/dashboard?${params.toString()}`);
+      } else {
+        navigate(`/dashboard?patient=${selectedId}`);
+      }
+    } catch (e: unknown) {
+      console.error("[triage] submit 실패:", e);
+      alert(
+        "백엔드 연동 실패 — 시연 모드로 대시보드 이동.\n" +
+          (e instanceof Error ? e.message : String(e))
+      );
+      navigate(`/dashboard?patient=${selectedId}`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function handleSave() {
+    applyLocalQueueUpdate();
+    alert("저장됨 (대기열 갱신 — 정식 제출은 'AI 분석 시작' 버튼)");
   }
 
   // 폼 유효성 — 필수 항목 체크
@@ -309,6 +410,7 @@ export default function TriagePage() {
       {/* 푸터 */}
       <TriageActionFooter
         canSubmit={canSubmit}
+        submitting={submitting}
         onReset={handleReset}
         onSave={handleSave}
         onSubmit={handleSubmit}

@@ -28,8 +28,8 @@ BEDROCK_MODEL_ID = os.getenv(
 # ECS 내부: http://{service}.drai.internal:8000
 # 로컬 개발: docker-compose로 같은 네트워크 (http://{service}:8000)
 # 공인 IP 직접 호출 (fallback): http://13.124.117.190:8000 등
-ECG_SERVICE_URL = os.getenv("ECG_SERVICE_URL", "http://13.124.117.190:8000")
-CXR_SERVICE_URL = os.getenv("CXR_SERVICE_URL", "http://3.35.133.73:8000")
+ECG_SERVICE_URL = os.getenv("ECG_SERVICE_URL", "http://52.79.251.216:8003")
+CXR_SERVICE_URL = os.getenv("CXR_SERVICE_URL", "http://52.79.251.216:8002")
 LAB_SERVICE_URL = os.getenv(
     "LAB_SERVICE_URL",
     "http://52.79.251.216:8000",

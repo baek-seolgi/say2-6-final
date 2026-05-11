@@ -39,6 +39,7 @@ frontend/dist/
 
 # RAG ChromaDB (S3 zip으로 별도 공유, 372MB)
 final/central/backend/rag_db/
+final/central/backend/rag_db.bak.*/
 
 # 외부 레포 복사본 (별도 저장소)
 _from_github/

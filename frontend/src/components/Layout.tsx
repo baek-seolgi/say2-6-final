@@ -11,7 +11,12 @@ const NAV_ITEMS = [
 ];
 
 // 자체 헤더/사이드바를 가진 페이지 (트리아지처럼 EMR 풀화면)
-const FULL_BLEED_ROUTES = ["/triage"];
+const FULL_BLEED_ROUTES = [
+  "/triage", "/dashboard",
+  "/patients", "/notes", "/records",
+  "/lab-queue", "/imaging-queue", "/prescriptions",
+  "/consult", "/call", "/stats",
+];
 
 export default function Layout() {
   const [online, setOnline] = useState(false);

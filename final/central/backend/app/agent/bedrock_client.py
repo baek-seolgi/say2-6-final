@@ -51,11 +51,16 @@ def invoke_claude(
     user: str,
     max_tokens: int = 2000,
     temperature: float = 0.3,
+    model_id: str | None = None,
 ) -> str:
-    """Bedrock Claude 호출 (system + user 메시지 분리)."""
+    """Bedrock Claude 호출 (system + user 메시지 분리).
+
+    model_id를 명시하면 해당 모델로, 미지정 시 BEDROCK_MODEL_ID 사용.
+    이 파라미터는 select_model() 라우팅 결과를 통과시키기 위한 것.
+    """
     client = _get_client()
     resp = client.invoke_model(
-        modelId=BEDROCK_MODEL_ID,
+        modelId=model_id or BEDROCK_MODEL_ID,
         contentType="application/json",
         accept="application/json",
         body=json.dumps({

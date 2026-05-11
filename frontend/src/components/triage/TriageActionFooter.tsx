@@ -3,12 +3,13 @@ import { Save, Sparkles, RotateCcw } from "lucide-react";
 
 interface Props {
   canSubmit: boolean;
+  submitting?: boolean;
   onReset: () => void;
   onSave: () => void;
   onSubmit: () => void;
 }
 
-export default function TriageActionFooter({ canSubmit, onReset, onSave, onSubmit }: Props) {
+export default function TriageActionFooter({ canSubmit, submitting = false, onReset, onSave, onSubmit }: Props) {
   return (
     <footer className="border-t border-gray-400 bg-white px-3 py-2 flex items-center justify-between">
       <div className="flex items-center gap-1 text-[10px] text-gray-500">
@@ -44,11 +45,14 @@ export default function TriageActionFooter({ canSubmit, onReset, onSave, onSubmi
         <button
           type="button"
           onClick={onSubmit}
-          disabled={!canSubmit}
+          disabled={!canSubmit || submitting}
           className="px-4 py-1.5 text-[12px] font-bold border border-gray-800 bg-gray-700 text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed rounded-md flex items-center gap-1.5 shadow-sm transition-colors"
         >
-          <Sparkles size={13} /> AI 분석 시작
-          <span className="ml-1 text-[10px] font-mono opacity-80">[Ctrl+Enter]</span>
+          <Sparkles size={13} className={submitting ? "animate-spin" : ""} />
+          {submitting ? "AI 분석 시작 중..." : "AI 분석 시작"}
+          {!submitting && (
+            <span className="ml-1 text-[10px] font-mono opacity-80">[Ctrl+Enter]</span>
+          )}
         </button>
       </div>
     </footer>

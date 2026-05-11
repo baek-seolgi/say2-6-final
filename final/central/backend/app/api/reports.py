@@ -65,42 +65,33 @@ async def generate_report(encounter_id: str):
         fhir_patient_id = str(encounter.get("patient_id"))
         fhir_encounter_id = encounter_id
 
-        # 1. Bedrock 종합 판단
+        # 1. Bedrock 종합 판단 — narrative 자유서술 + RAG 사례 + 사용 모델
         report = await generate_integrated_report(encounter_id)
-        ai_diagnosis = report.get("diagnosis", "")
-        ai_risk_level = report.get("risk_level", "routine")
-        ai_recommendations = report.get("recommendations", [])
+        narrative: str = report.get("narrative", "")
+        model_used: str = report.get("model_used", "Haiku")
+        similar_cases: list = report.get("similar_cases", [])
 
         # 2. 기존 소견서가 있는지 먼저 확인 (재생성 케이스 — FHIR PUT 대상)
         existing = await ops_reports.get_by_encounter(encounter_id)
         existing_fhir_id: str | None = (existing or {}).get("fhir_report_id")
 
-        # 3. 운영 DB UPSERT (preliminary 덮어쓰기, signed면 거부)
+        # 3. 운영 DB UPSERT — narrative를 ai_diagnosis 컬럼에 저장 (스키마 호환).
+        #    risk_level은 클라이언트가 모달 max-aggregation으로 결정하므로 'routine' default.
         report_id = await ops_reports.insert_report(
             encounter_id=encounter_id,
-            ai_diagnosis=ai_diagnosis,
-            ai_recommendations=ai_recommendations,
-            ai_risk_level=ai_risk_level,
+            ai_diagnosis=narrative,
+            ai_recommendations=[],   # narrative에 통합되어 있어 별도 추출 불필요
+            ai_risk_level="routine",
         )
 
-        # 4. FHIR DiagnosticReport 저장 — 기존 ID 있으면 PUT(replace), 없으면 POST(create)
+        # 4. FHIR DiagnosticReport 저장 — narrative를 conclusion에 그대로 저장
         fhir_report_id: str | None = existing_fhir_id
         try:
-            conclusion_parts = [ai_diagnosis]
-            if report.get("clinical_reasoning"):
-                conclusion_parts.append("\n\n[Clinical Reasoning]\n" + report["clinical_reasoning"])
-            if ai_recommendations:
-                recs = "\n".join(
-                    f"- ({r.get('priority', '?')}) {r.get('action', '')}"
-                    for r in ai_recommendations
-                )
-                conclusion_parts.append("\n\n[Recommendations]\n" + recs)
-
             fhir_body = build_diagnostic_report(
                 patient_id=fhir_patient_id,
                 encounter_id=fhir_encounter_id,
-                observation_ids=[],  # Observation은 FHIR에 저장하지 않으므로 빈 배열
-                conclusion="\n".join(conclusion_parts),
+                observation_ids=[],
+                conclusion=narrative,
             )
 
             if existing_fhir_id:
@@ -120,34 +111,25 @@ async def generate_report(encounter_id: str):
             # FHIR 저장 실패해도 운영 DB 소견서는 유효 → 프론트는 즉시 확인 가능
             logger.warning("[FHIR] DiagnosticReport 저장 실패: %s", e)
 
-        # 5. WebSocket 브로드캐스트
+        # 6. WebSocket 브로드캐스트
         await broadcast(encounter_id, {
             "event": "report_generated",
             "report_id": report_id,
             "fhir_report_id": fhir_report_id,
-            "risk_level": ai_risk_level,
-            "payload": {
-                "diagnosis": ai_diagnosis,
-                "risk_level": ai_risk_level,
-                "differential_diagnosis": report.get("differential_diagnosis", []),
-                "recommendations": ai_recommendations,
-                "clinical_reasoning": report.get("clinical_reasoning", ""),
-            },
+            "model_used": model_used,
+            "payload": {"narrative": narrative},
         })
 
         return {
             "report_id": report_id,
             "fhir_report_id": fhir_report_id,
             "encounter_id": encounter_id,
-            "subject_id": encounter.get("subject_id"),       # MIMIC 원본 환자 ID
-            "patient_name": encounter.get("patient_name"),   # 화면 식별용
+            "subject_id": encounter.get("subject_id"),
+            "patient_name": encounter.get("patient_name"),
             "status": "preliminary",
-            "diagnosis": ai_diagnosis,
-            "risk_level": ai_risk_level,
-            "differential_diagnosis": report.get("differential_diagnosis", []),
-            "recommendations": ai_recommendations,
-            "clinical_reasoning": report.get("clinical_reasoning", ""),
-            "similar_cases": report.get("similar_cases", []),  # RAG 검색 사례
+            "narrative": narrative,
+            "model_used": model_used,
+            "similar_cases": similar_cases,
         }
 
     except HTTPException:

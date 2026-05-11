@@ -18,6 +18,11 @@ export type DemoCasePatient = QueuePatient & {
   subject_id: string;        // MIMIC subject_id (= 차트번호)
   golden_dx: string;         // 정답 진단 (시연 검증용)
   risk_level: "URGENT" | "CRITICAL";
+
+  // ── 멀티모달 입력 자원 ─────────────────────────────────
+  cxr_s3_uri: string;        // MIMIC-CXR S3 경로 (chest-svc-pre가 다운로드)
+  cxr_study_id: string;      // CXR study_id (e.g., "55653653")
+  ecg_record_path?: string;  // PhysioNet ECG record 경로 (선택)
 };
 
 const TODAY = "2026-05-04";
@@ -31,6 +36,11 @@ export const DEMO_CASES_4: DemoCasePatient[] = [
     subject_id: "19041043",
     golden_dx: "신규 발현 심방세동 (Paroxysmal Afib) — 발병 90분",
     risk_level: "URGENT",
+    cxr_s3_uri:
+      "s3://say1-pre-project-5/data/mimic-cxr-jpg/files/p19/p19041043/s55653653/93fb38fb-c721d253-e194385f-61c955d3-f9a90736.jpg",
+    cxr_study_id: "55653653",
+    ecg_record_path:
+      "s3://say2-6team/mimic/ecg/waveforms/files/p1904/p19041043/s45238325/45238325",
 
     id: "P-19041043",
     mrn: "19041043",
@@ -58,6 +68,11 @@ export const DEMO_CASES_4: DemoCasePatient[] = [
     subject_id: "13715870",
     golden_dx: "만성 이완성 심부전 급성 악화 (ADHF) — NT-proBNP 12,462",
     risk_level: "CRITICAL",
+    cxr_s3_uri:
+      "s3://say1-pre-project-5/data/mimic-cxr-jpg/files/p13/p13715870/s53940823/a3fd0c8a-75e1b24c-12028360-df56d3d4-42ee122e.jpg",
+    cxr_study_id: "53940823",
+    ecg_record_path:
+      "s3://say2-6team/mimic/ecg/waveforms/files/p1371/p13715870/s48224691/48224691",
 
     id: "P-13715870",
     mrn: "13715870",
@@ -85,6 +100,11 @@ export const DEMO_CASES_4: DemoCasePatient[] = [
     subject_id: "15638163",
     golden_dx: "중증 고칼륨혈증 (K+ 6.6) + 말기 신부전 (BUN 172)",
     risk_level: "CRITICAL",
+    cxr_s3_uri:
+      "s3://say1-pre-project-5/data/mimic-cxr-jpg/files/p15/p15638163/s53577003/9f64814d-438562ea-6e1930ec-a7713602-c61d382e.jpg",
+    cxr_study_id: "53577003",
+    ecg_record_path:
+      "s3://say2-6team/mimic/ecg/waveforms/files/p1563/p15638163/s42679999/42679999",
 
     id: "P-15638163",
     mrn: "15638163",
@@ -113,6 +133,11 @@ export const DEMO_CASES_4: DemoCasePatient[] = [
     subject_id: "18230098",
     golden_dx: "NSTEMI 강력 의심 (Tropo T 0.25) + ADHF (NT-proBNP 23,468) + ESRD",
     risk_level: "CRITICAL",
+    cxr_s3_uri:
+      "s3://say1-pre-project-5/data/mimic-cxr-jpg/files/p18/p18230098/s58964529/ef582e36-fe63fc3f-a5d512ae-9e2828c0-88d3b59d.jpg",
+    cxr_study_id: "58964529",
+    ecg_record_path:
+      "s3://say2-6team/mimic/ecg/waveforms/files/p1823/p18230098/s46745774/46745774",
 
     id: "P-18230098",
     mrn: "18230098",

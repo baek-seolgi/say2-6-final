@@ -269,6 +269,7 @@ def build_service_request(
         "code": {"coding": [code_coding]},
         "requester": {"display": "Dr.AI Agent"},
         "authoredOn": _now_iso(),
+        "reasonCode": [{"text": reason_text}] if reason_text else [],
         "note": [{"text": reason_text}] if reason_text else [],
     }
 

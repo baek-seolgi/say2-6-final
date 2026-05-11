@@ -534,6 +534,8 @@ async def _suggest_next_modality(encounter_id: str, patient_id: str) -> None:
             meta = _json.loads(meta)
         patient_ctx = {
             "chief_complaint": enc_row.get("chief_complaint") or "",
+            "complaint_detail": meta.get("complaint_detail") or enc_row.get("chief_complaint") or "",
+            "past_history": meta.get("past_history") or [],
             "age": enc_row.get("patient_age") or 0,
             "sex": (enc_row.get("patient_gender") or "U")[:1].upper(),
             "vitals": meta.get("vitals") or {},
@@ -541,22 +543,36 @@ async def _suggest_next_modality(encounter_id: str, patient_id: str) -> None:
 
         # 운영 DB에서 완료된 모달의 raw 결과 수집 → FusionDecisionEngine 입력 형식으로 변환
         # get_all_modal_results는 {"CXR": {...raw...}, "ECG": {...raw...}} 형태 반환.
+        # ⚠ finding은 top-1만 보내면 ECG가 [afib, heart_failure, htn] 동시 검출 시 top1만 룰 매칭됨.
+        #    감지된 모든 finding 이름을 공백 구분으로 합쳐서 substring 매칭이 누락 안 되게 함.
         inference_results: list[dict] = []
         all_raws = await ops_modal_results.get_all_modal_results(encounter_id)
         for modality, raw in all_raws.items():
             if isinstance(raw, str):
                 import json as _json
                 raw = _json.loads(raw)
-            # finding 리스트 중 detected=True 또는 confidence 가장 높은 것 1개 대표
             findings = raw.get("findings") or []
-            top = next(
-                (f for f in findings if f.get("detected")),
-                max(findings, key=lambda f: f.get("confidence", 0), default=None),
+            # detected=True 우선, detected 필드 없으면 confidence ≥ 0.5 (ECG는 detected 필드가 없음)
+            detected_names = []
+            for f in findings:
+                flag = f.get("detected")
+                if flag is True:
+                    detected_names.append(str(f.get("name", "")))
+                elif flag is None and f.get("confidence", 0) >= 0.5:
+                    detected_names.append(str(f.get("name", "")))
+            if not detected_names:
+                top = max(findings, key=lambda f: f.get("confidence", 0), default=None)
+                if top:
+                    detected_names = [str(top.get("name", ""))]
+            combined_finding = " ".join(detected_names) or raw.get("summary", "")
+            top_conf = max(
+                (f.get("confidence", 0) for f in findings if f.get("detected")),
+                default=0,
             )
             inference_results.append({
                 "modality": modality.upper(),
-                "finding": (top or {}).get("name", "") if top else raw.get("summary", ""),
-                "confidence": (top or {}).get("confidence", 0),
+                "finding": combined_finding,
+                "confidence": top_conf,
                 "risk_level": raw.get("risk_level"),
                 "summary": raw.get("summary", ""),
             })

@@ -8,6 +8,7 @@ RAG Retriever — Titan v2 임베딩 + ChromaDB 검색 + 다양성 필터링.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -29,6 +30,10 @@ TOP_K_FETCH = int(os.getenv("RAG_TOP_K_FETCH", "20"))
 TOP_K_FINAL = int(os.getenv("RAG_TOP_K_FINAL", "3"))
 MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.15"))
 
+# 임베딩 캐시 — 같은 쿼리 재호출 시 Bedrock 비용/지연 절약
+EMBED_CACHE_ENABLED = os.getenv("EMBED_CACHE_ENABLED", "true").lower() == "true"
+EMBED_CACHE_DIR = os.getenv("EMBED_CACHE_DIR", "/tmp/say6_embed_cache")
+
 FALLBACK_RESPONSE = (
     "유사한 과거 환자 사례를 찾지 못했습니다. 추가 검사가 필요합니다."
 )
@@ -41,14 +46,32 @@ class Retriever:
         self.bedrock = boto3.client("bedrock-runtime")
         client = chromadb.PersistentClient(path=DB_DIR)
         self.collection = client.get_collection(name=COLLECTION_NAME)
+        if EMBED_CACHE_ENABLED:
+            os.makedirs(EMBED_CACHE_DIR, exist_ok=True)
         logger.info(
-            "[rag] Retriever ready: db=%s collection=%s docs=%d",
+            "[rag] Retriever ready: db=%s collection=%s docs=%d cache=%s",
             DB_DIR, COLLECTION_NAME, self.collection.count(),
+            EMBED_CACHE_DIR if EMBED_CACHE_ENABLED else "disabled",
         )
 
     def _embed(self, text: str) -> list[float]:
+        truncated = text[:8000]
+
+        # 캐시 확인 — MD5 해시로 디스크 파일 lookup
+        cache_path: str | None = None
+        if EMBED_CACHE_ENABLED:
+            cache_key = hashlib.md5(truncated.encode("utf-8")).hexdigest()
+            cache_path = os.path.join(EMBED_CACHE_DIR, f"{cache_key}.json")
+            if os.path.exists(cache_path):
+                try:
+                    with open(cache_path, "r") as f:
+                        return json.load(f)["embedding"]
+                except Exception as e:
+                    logger.warning("[rag] embed cache read fail: %s", e)
+
+        # API 호출
         body = json.dumps({
-            "inputText": text[:8000],
+            "inputText": truncated,
             "dimensions": EMBED_DIMENSIONS,
         })
         for attempt in range(1, 4):
@@ -59,7 +82,20 @@ class Retriever:
                     accept="application/json",
                     body=body,
                 )
-                return json.loads(resp["body"].read())["embedding"]
+                embedding = json.loads(resp["body"].read())["embedding"]
+
+                # 캐시 저장
+                if cache_path is not None:
+                    try:
+                        with open(cache_path, "w") as f:
+                            json.dump({
+                                "text_preview": truncated[:200],
+                                "embedding": embedding,
+                            }, f)
+                    except Exception as e:
+                        logger.warning("[rag] embed cache write fail: %s", e)
+
+                return embedding
             except ClientError:
                 time.sleep(2 ** attempt)
         raise RuntimeError("임베딩 API 호출 실패")

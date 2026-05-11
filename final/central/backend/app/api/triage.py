@@ -22,8 +22,9 @@ client.py가 그 JSON을 HAPI FHIR 서버(=DB)에 저장합니다.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
@@ -65,6 +66,7 @@ class VitalsForm(BaseModel):
 
 class ChiefComplaintForm(BaseModel):
     text: str
+    detail: Optional[str] = None         # 자유서술 (예: "혈뇨로 내원, 투석 미시행")
     onset_minutes_ago: Optional[int] = None
     code_hint: Optional[str] = None
 
@@ -105,22 +107,73 @@ class TriageSubmission(BaseModel):
     notes: Optional[str] = None          # Encounter.note에 첨부
 
 
-@router.post("/submit")
-async def submit_triage(form: TriageSubmission):
+async def _write_secondary_resources(
+    patient_id: str,
+    encounter_id: str,
+    form: "TriageSubmission",
+    cc_res: dict,
+):
     """
-    §7.1 POST 순서:
-    1. Patient (참조 없음)
-    2. Encounter (Patient 참조)
-    3. 나머지 (Observation, Condition)
+    핵심 응답(Patient/Encounter/Condition/SR) 후에 백그라운드로 쓰는 부수 리소스.
+    실패해도 핵심 흐름엔 영향 없음. asyncio.gather로 병렬 처리.
+    """
+    coros = []
+
+    # Vitals Bundle
+    vitals_bundle = build_vitals_bundle(
+        patient_id, encounter_id, form.vitals.model_dump()
+    )
+    coros.append(fhir.transaction(vitals_bundle))
+
+    # Past History Bundle
+    if form.past_history:
+        history_bundle = build_past_history(
+            patient_id, [h.model_dump() for h in form.past_history]
+        )
+        coros.append(fhir.transaction(history_bundle))
+
+    # AllergyIntolerance (NKDA가 아닐 때만)
+    if form.allergies:
+        allergy_res = build_allergy_intolerance(patient_id, form.allergies)
+        if allergy_res:
+            coros.append(fhir.create("AllergyIntolerance", allergy_res))
+
+    # MedicationStatement
+    if form.medications:
+        med_res = build_medication_statement(patient_id, encounter_id, form.medications)
+        if med_res:
+            coros.append(fhir.create("MedicationStatement", med_res))
+
+    # 모두 병렬 실행 (HAPI 동시 처리)
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning(f"[bg] 부수 FHIR 리소스 저장 실패: {r}")
+
+    logger.info(
+        f"[bg] enc={encounter_id} 부수 리소스 {len(coros)}개 처리 완료 "
+        f"(cc_id={cc_res.get('id')})"
+    )
+
+
+@router.post("/submit")
+async def submit_triage(form: TriageSubmission, background_tasks: BackgroundTasks):
+    """
+    핵심 응답 경로 (sync, ~1.5초):
+      1. Patient → 2. Encounter → 3. ops_db insert
+      4. Chief Complaint Condition (cc_id 응답에 포함)
+      5. AI 결정 → Primary ServiceRequest (sr_id 응답에 포함)
+
+    백그라운드 (응답 후, ~3-4초):
+      Vitals · Past History · AllergyIntolerance · MedicationStatement
     """
     try:
-        # 1) Patient
+        # ── 1) Patient + Encounter (직렬, encounter_id 필요) ─
         patient_res = await fhir.create(
             "Patient", build_patient(form.patient.model_dump())
         )
         patient_id = patient_res["id"]
 
-        # 2) Encounter (notes 있으면 Encounter.note에 첨부)
         encounter_res = await fhir.create(
             "Encounter",
             build_encounter(
@@ -131,88 +184,46 @@ async def submit_triage(form: TriageSubmission):
         )
         encounter_id = encounter_res["id"]
 
-        # ⭐ 운영 DB에도 encounter 등록 (이후 모달 결과/리포트가 참조)
-        #   FHIR 쓰기는 이미 완료된 시점이므로 여기서 실패해도 프론트엔 영향 없음
-        #   Bedrock 종합 판단 시 환자 컨텍스트(바이탈+과거력)를 한 번에 읽도록 metadata에 포함
-        try:
-            await ops_encounters.insert_encounter(
-                patient_id=patient_id,
-                fhir_encounter_id=encounter_id,
-                fhir_patient_id=patient_id,
-                chief_complaint=form.chief_complaint.text,
-                patient_name=form.patient.name,
-                patient_age=form.patient.age,
-                patient_gender=form.patient.gender,
-                metadata={
-                    "vitals": form.vitals.model_dump(),
-                    "past_history": [h.text for h in form.past_history],
-                    "onset_minutes_ago": form.chief_complaint.onset_minutes_ago,
-                    # MIMIC 원본 데이터 식별자 (모달 호출 시 S3 경로로 사용)
-                    "mimic": form.mimic.model_dump() if form.mimic else None,
-                },
-            )
-        except Exception as e:
-            logger.warning("[ops_db] encounter insert 실패: %s", e)
-
-        # 타임라인용 — 환자 도착 & 트리아지 단계 시작
-        await broadcast(encounter_id, {
-            "event": "encounter_created",
-            "patient_name": form.patient.name,
-            "chief_complaint": form.chief_complaint.text,
-        })
-
-        # 3-a) Vitals Bundle (transaction)
-        vitals_bundle = build_vitals_bundle(
-            patient_id, encounter_id, form.vitals.model_dump()
+        # ── 2) ops_db insert + Chief Complaint Condition (병렬) ─
+        ops_insert_coro = ops_encounters.insert_encounter(
+            patient_id=patient_id,
+            fhir_encounter_id=encounter_id,
+            fhir_patient_id=patient_id,
+            chief_complaint=form.chief_complaint.text,
+            patient_name=form.patient.name,
+            patient_age=form.patient.age,
+            patient_gender=form.patient.gender,
+            metadata={
+                "vitals": form.vitals.model_dump(),
+                "past_history": [h.text for h in form.past_history],
+                "complaint_detail": form.chief_complaint.detail,
+                "onset_minutes_ago": form.chief_complaint.onset_minutes_ago,
+                "mimic": form.mimic.model_dump() if form.mimic else None,
+            },
         )
-        await fhir.transaction(vitals_bundle)
-
-        # 3-b) Chief Complaint (Condition)
-        cc_res = await fhir.create(
+        cc_create_coro = fhir.create(
             "Condition",
             build_chief_complaint(
                 patient_id, encounter_id, form.chief_complaint.model_dump()
             ),
         )
+        ops_result, cc_res = await asyncio.gather(
+            ops_insert_coro, cc_create_coro, return_exceptions=True
+        )
+        if isinstance(ops_result, Exception):
+            logger.warning("[ops_db] encounter insert 실패: %s", ops_result)
+        if isinstance(cc_res, Exception):
+            raise cc_res  # cc_id가 응답에 필요하므로 실패하면 전체 실패
 
-        # 3-c) Past History (Bundle)
-        if form.past_history:
-            history_bundle = build_past_history(
-                patient_id,
-                [h.model_dump() for h in form.past_history],
-            )
-            await fhir.transaction(history_bundle)
-
-        # 3-d) AllergyIntolerance (NKDA가 아닐 때만)
-        if form.allergies:
-            allergy_res = build_allergy_intolerance(patient_id, form.allergies)
-            if allergy_res:
-                try:
-                    await fhir.create("AllergyIntolerance", allergy_res)
-                    logger.info(f"[fhir] AllergyIntolerance 저장: {form.allergies}")
-                except Exception as e:
-                    logger.warning(f"[fhir] AllergyIntolerance 저장 실패: {e}")
-
-        # 3-e) MedicationStatement (복용약물)
-        if form.medications:
-            med_res = build_medication_statement(
-                patient_id, encounter_id, form.medications
-            )
-            if med_res:
-                try:
-                    await fhir.create("MedicationStatement", med_res)
-                    logger.info(f"[fhir] MedicationStatement 저장: {form.medications[:50]}…")
-                except Exception as e:
-                    logger.warning(f"[fhir] MedicationStatement 저장 실패: {e}")
-
-        # ── 4) FusionDecisionEngine 호출 → 초기 모달 제안 ──
+        # ── 3) AI 결정 + Primary SR (sync, sr_id 응답에 포함) ─
         central_patient = {
             "age": form.patient.age,
             "sex": form.patient.gender.capitalize(),
             "chief_complaint": form.chief_complaint.text,
+            "complaint_detail": form.chief_complaint.detail or form.chief_complaint.text or "",
+            "past_history": [h.text for h in form.past_history],
             "vitals": form.vitals.model_dump(),
         }
-
         engine = FusionDecisionEngine(
             patient=central_patient,
             modalities_completed=[],
@@ -220,39 +231,63 @@ async def submit_triage(form: TriageSubmission):
             iteration=1,
         )
         decision = engine.decide()
-
-        # AI 우선 모달 1개만 SR(draft) 생성 — 프론트 [Proceed X] 버튼에 바인딩
-        # 의사가 필요하면 [Order ECG]/[Order LAB] 버튼으로 다른 모달을 직접 오더 가능.
         next_modalities = decision.get("next_modalities", [])
+        is_parallel = bool(decision.get("parallel"))
         primary_modality = next_modalities[0] if next_modalities else None
+        priority_level = "urgent" if decision.get("risk_level") == "high" else "routine"
 
+        # parallel=True면 모든 modality에 SR 동시 생성 (병렬 오더 — 임상 가이드라인)
+        # 그렇지 않으면 첫 번째(primary)만 SR 생성 (순차)
         primary_sr_id: str | None = None
-        if primary_modality:
+        all_sr_ids: list[str] = []
+        sr_by_modality: list[tuple[str, str]] = []  # [(modality, sr_id), ...]
+        target_modalities = next_modalities if is_parallel else next_modalities[:1]
+
+        for mod in target_modalities:
             sr_res = await propose_order(
                 patient_id=patient_id,
                 encounter_id=encounter_id,
-                modality=primary_modality,
+                modality=mod,
                 reason_text=decision.get("rationale", ""),
-                priority="urgent" if decision.get("risk_level") == "high" else "routine",
+                priority=priority_level,
             )
-            primary_sr_id = sr_res["id"]
+            all_sr_ids.append(sr_res["id"])
+            sr_by_modality.append((mod, sr_res["id"]))
+            if primary_sr_id is None:
+                primary_sr_id = sr_res["id"]
 
-            # 타임라인용 — 오더(ServiceRequest) 생성됨 (UI: "ECG/CXR/LAB Order Placed")
+        # ── 4) 백그라운드: Vitals / Past History / Allergy / Medication 병렬 ─
+        background_tasks.add_task(
+            _write_secondary_resources, patient_id, encounter_id, form, cc_res
+        )
+
+        # ── 5) WebSocket broadcast (응답 후 어차피 캐치되므로 백그라운드로) ─
+        async def _broadcast_events():
             await broadcast(encounter_id, {
-                "event": "order_placed",
-                "service_request_id": primary_sr_id,
-                "modality": primary_modality,
+                "event": "encounter_created",
+                "patient_name": form.patient.name,
+                "chief_complaint": form.chief_complaint.text,
             })
-
-        # WebSocket으로 프론트에 푸시 (AI 최우선 추천 + 판단 근거)
-        await broadcast(encounter_id, {
-            "event": "initial_proposal",
-            "service_request_id": primary_sr_id,
-            "modality": primary_modality,
-            "rationale": decision.get("rationale", ""),
-            "risk_level": decision.get("risk_level", "unknown"),
-            "all_suggested": next_modalities,  # 참고용 — 프론트는 primary만 Proceed 버튼으로
-        })
+            # 병렬 주문 시 modality별로 모두 emit (timeline에 ECG/LAB 둘 다 보이도록)
+            for mod, sr_id in sr_by_modality:
+                await broadcast(encounter_id, {
+                    "event": "order_placed",
+                    "service_request_id": sr_id,
+                    "modality": mod,
+                    "parallel": is_parallel,
+                })
+            # initial_proposal도 modality별로 (병렬이면 N건, 순차면 1건)
+            for mod, sr_id in sr_by_modality:
+                await broadcast(encounter_id, {
+                    "event": "initial_proposal",
+                    "service_request_id": sr_id,
+                    "modality": mod,
+                    "rationale": decision.get("rationale", ""),
+                    "risk_level": decision.get("risk_level", "unknown"),
+                    "all_suggested": next_modalities,
+                    "parallel": is_parallel,
+                })
+        background_tasks.add_task(_broadcast_events)
 
         return {
             "patient_id": patient_id,
@@ -260,6 +295,9 @@ async def submit_triage(form: TriageSubmission):
             "chief_complaint_id": cc_res["id"],
             "primary_modality": primary_modality,
             "service_request_id": primary_sr_id,
+            "all_service_request_ids": all_sr_ids,
+            "all_modalities": target_modalities,
+            "parallel": is_parallel,
             "rationale": decision.get("rationale", ""),
             "risk_level": decision.get("risk_level", "unknown"),
             "status": "created",

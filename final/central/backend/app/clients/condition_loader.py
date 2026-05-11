@@ -318,6 +318,11 @@ def _fetch_diagnoses_sync(subject_id: str) -> list[dict]:
     return rows
 
 
+# subject_id → 결과 in-memory 캐시 (프로세스 lifecycle 동안 유지)
+# S3 Select가 호출당 0.7~15초 소요라 두 번 부르지 않도록.
+_conditions_cache: dict[str, dict] = {}
+
+
 async def fetch_conditions(subject_id: str) -> dict:
     """
     MIMIC diagnoses_icd에서 환자 진단 + 알레르기 비동기 조회.
@@ -342,6 +347,11 @@ async def fetch_conditions(subject_id: str) -> dict:
           "total": <조회된 진단 행 수>,
         }
     """
+    # 캐시 hit → 즉시 반환 (S3 호출 회피)
+    if subject_id in _conditions_cache:
+        logger.info(f"[condition_loader] 캐시 hit: subject={subject_id}")
+        return _conditions_cache[subject_id]
+
     # boto3 동기 호출을 thread executor로 비동기화
     rows = await asyncio.to_thread(_fetch_diagnoses_sync, subject_id)
 
@@ -361,7 +371,7 @@ async def fetch_conditions(subject_id: str) -> dict:
     else:
         allergy_text = "NKDA"
 
-    return {
+    result = {
         "subject_id": subject_id,
         "history_codes": history_codes,
         "raw_icd": raw_icd,
@@ -369,3 +379,5 @@ async def fetch_conditions(subject_id: str) -> dict:
         "allergy_text": allergy_text,
         "total": len(rows),
     }
+    _conditions_cache[subject_id] = result
+    return result

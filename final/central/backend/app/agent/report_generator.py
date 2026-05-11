@@ -79,29 +79,98 @@ def _build_rag_query(encounter: dict[str, Any], modal_results: dict[str, Any]) -
     return " ".join(parts)
 
 
-SYSTEM_PROMPT = """당신은 응급실 주치의를 보조하는 의료 AI입니다.
-3개 모달(ECG/CXR/혈액검사) AI 추론 결과와 환자 컨텍스트를 종합하여
-임상적으로 정확하고 실행 가능한 진단 소견서를 작성합니다.
+# ── 모델 라우팅 — 케이스 난이도에 따라 Haiku(기본) / Sonnet(고난도) 자동 선택 ──
+import os
 
-반드시 다음 JSON 형식으로만 응답하세요:
-{
-  "diagnosis": "주 진단 (한글, 1~3문장)",
-  "risk_level": "critical" | "urgent" | "routine",
-  "differential_diagnosis": ["감별진단 1", "감별진단 2", ...],
-  "recommendations": [
-    {"action": "권고 조치 1", "priority": 1, "rationale": "근거"},
-    ...
-  ],
-  "clinical_reasoning": "종합 판단 근거 (한글, 3~5문장)"
-}
+# Global inference profile (ap-northeast-2 region 호환)
+# - Haiku 4.5: 가장 저렴·빠른 최신 모델 (일반 케이스)
+# - Sonnet 4.6: 한국어 의학 reasoning 강함 (고난도 케이스)
+LLM_MODEL_HAIKU = os.getenv("RAG_LLM_HAIKU", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+LLM_MODEL_SONNET = os.getenv("RAG_LLM_SONNET", "global.anthropic.claude-sonnet-4-6")
+LLM_MAX_TOKENS = int(os.getenv("RAG_LLM_MAX_TOKENS", "2048"))
 
-원칙:
-- AI 추론 결과의 신뢰도를 절대적으로 믿지 말고 교차 검증하세요.
-- Critical 수치(K+>6.5, Troponin 상승, ST elevation 등)는 즉각 조치를 권고하세요.
-- 미측정 검사는 "의사 판단으로 추가 검사 고려" 형태로 표현하세요.
-- 환자 과거력(history)을 반드시 임상 판단에 반영하세요.
-- 최종 결정은 의사가 내림을 전제로 "초안"임을 고려한 신중한 표현을 쓰세요.
-"""
+# safety-critical 키워드 — 등장하면 Sonnet으로 자동 승격
+CRITICAL_KEYWORDS = [
+    "cardiac arrest", "sepsis", "shock", "intubation", "code blue",
+    "massive", "emergent", "critical", "unstable", "arrest",
+    "hyperkalemia", "stemi", "nstemi", "stroke", "tamponade",
+    "심정지", "패혈증", "쇼크", "삽관", "고칼륨혈증", "심근경색",
+]
+
+
+def select_model(similar_cases: list[dict], query: str) -> str:
+    """
+    케이스 난이도에 따라 Haiku(기본) 또는 Sonnet(고난도) 선택.
+
+    Sonnet 사용 조건 (하나라도 해당):
+    1) critical 키워드 (심정지/쇼크/심근경색/고칼륨혈증/패혈증 등)
+    2) 멀티모달 종합 (discharge_summary + radiology RAG 사례 모두 보유)
+    3) 검색 유사도 낮음 (top-1 < 0.35) — 흔치 않은 케이스
+    """
+    # 조건 1: critical 키워드
+    all_text = (query or "").lower()
+    for r in (similar_cases or [])[:3]:
+        all_text += " " + (r.get("document") or "").lower()[:500]
+    if any(kw in all_text for kw in CRITICAL_KEYWORDS):
+        return LLM_MODEL_SONNET
+
+    # 조건 2: 멀티모달 종합 사례
+    chunk_types = {
+        (r.get("metadata") or {}).get("chunk_type") for r in (similar_cases or [])
+    }
+    if "discharge_summary" in chunk_types and "radiology" in chunk_types:
+        return LLM_MODEL_SONNET
+
+    # 조건 3: 유사도 낮음
+    if similar_cases and similar_cases[0].get("similarity", 1.0) < 0.35:
+        return LLM_MODEL_SONNET
+
+    return LLM_MODEL_HAIKU
+
+
+# ── CoT 4단계 SYSTEM_PROMPT (Evidence-based 추론 + 과잉 진단 방지) ──
+SYSTEM_PROMPT = (
+    "당신은 철저하게 증거 기반(Evidence-based)으로 사고하는 대학병원 응급의학과 전문의입니다. "
+    "제공된 [환자 컨텍스트], [모달 분석 결과], [과거 유사 환자 사례]를 바탕으로 최종 소견을 작성합니다. "
+    "단, 곧바로 글을 쓰지 말고 반드시 아래의 4단계를 순서대로 속으로 생각한 뒤, "
+    "그 결과만을 바탕으로 최종 5가지 항목을 도출하십시오.\n\n"
+
+    "1단계 (데이터 유효성 검증): "
+    "현재 환자의 각 검사 결과가 실제로 유효한지 확인하십시오. "
+    "'판독 불가', '기록 없음', '검사 미시행', 'not_performed' 등의 표현이 있다면 "
+    "해당 검사는 '데이터 없음'으로 엄격히 분류하고, "
+    "이를 절대 '정상'으로 취급하여 질병이 없다고 단정 짓지 마십시오. "
+    "미시행된 검사 중 현재 소견에 비추어 필요하다고 판단되는 것이 있다면, "
+    "어떤 검사가 왜 필요한지 근거와 함께 권고 사항에 포함하십시오.\n\n"
+
+    "2단계 (구체적 팩트 추출): "
+    "현재 환자의 기록에서 구체적인 수치(예: WBC 18,500, Troponin T 0.25, K+ 6.6)와 "
+    "병변의 정확한 위치(예: 우측 하엽 폐경화)를 빠짐없이 추출하십시오. "
+    "최종 소견 작성 시 두리뭉실한 표현(예: '수치 상승')을 피하고 "
+    "이 구체적인 수치와 위치를 반드시 명시하십시오.\n\n"
+
+    "3단계 (정상과 비정상의 철저한 분리 및 과거 기록 적용): "
+    "현재 환자의 검사 결과 중 '정상'인 항목과 '비정상'인 항목을 분리하십시오. "
+    "[가장 중요한 규칙] 과거 유사 환자들의 소견은 "
+    "오직 현재 환자의 '비정상' 항목을 해석할 때만 참고하십시오. "
+    "현재 환자가 정상인 항목에 대해 과거 환자의 병을 끌고 와서 "
+    "경고하거나 예측하는 과잉 진단(Overdiagnosis)을 절대 하지 마십시오. "
+    "환자의 기저질환(CKD/ESRD 등)이 있다면 baseline 수치를 고려하여 "
+    "단순 수치 상승을 critical로 판단하지 마십시오.\n\n"
+
+    "4단계 (최종 소견 작성): "
+    "위 1~3단계를 철저히 준수한 상태에서, 아래 5가지 항목으로 번호를 매겨 한국어로 작성하십시오. "
+    "각 항목은 명확한 단락(2~5문장)으로 작성하고, JSON 같은 구조가 아닌 자연어 서술로 답하십시오:\n"
+    "1. 주요 소견 분석 — 비정상 검사 결과의 구체적 수치와 임상적 의미\n"
+    "2. 과거 사례 비교 — 유사 환자와의 공통점/차이점 (구체적 근거 포함, 사례 없으면 '해당 없음')\n"
+    "3. 예상 진단 — 가장 가능성 높은 진단명과 감별 진단 (환자의 기저질환·치료 이력 반영)\n"
+    "4. 위험도 평가 — 긴급 조치 필요 여부, 합병증 위험\n"
+    "5. 권고 사항 — 추가 검사, 치료 방향, 전문과 협진 필요 여부 (구체적 약물/용량은 담당 의사 판단으로 표현)\n\n"
+
+    "의학 약어가 등장하면 반드시 '약어 (풀네임: 한글 설명)' 형식으로 기재하십시오. "
+    "최종 결정은 담당 의사가 내리며, 본 소견서는 임상 판단 보조용 초안(preliminary)임을 인지하고 "
+    "신중한 표현을 쓰십시오."
+)
 
 
 def _format_similar_cases(similar_cases: list[dict]) -> str:
@@ -159,43 +228,11 @@ def _build_user_prompt(
 {rag_block}
 
 위 환자 컨텍스트, 모달 결과, 그리고 과거 유사 환자 사례를 종합하여
-JSON 형식 진단 소견서를 작성하세요.
-- 유사 사례에서 임상적으로 도움이 되는 패턴(처치, 예후 등)이 있다면 clinical_reasoning에 반영하세요.
-- 유사도가 낮거나 사례가 없으면 일반 임상 지식만으로 판단하세요.
+[작성 형식]에 명시된 5항목 한국어 자연어 서술을 작성하십시오.
+- 유사 사례에서 임상적으로 도움이 되는 패턴(처치 흐름, 예후 등)을 적극 반영하십시오.
+- 유사도가 낮거나 사례가 없으면 '2. 과거 사례 비교'에 '해당 없음'으로 명시하고 일반 임상 지식만으로 판단하십시오.
+- 위험도 라벨(critical/urgent/routine)은 별도로 산정되므로 본문에서는 '긴급도가 높음/중간/낮음' 같은 자연어로만 서술하십시오.
 """
-
-
-def _parse_claude_response(text: str) -> dict[str, Any]:
-    """Claude 응답에서 JSON 블록 추출 및 파싱."""
-    # ```json ... ``` 블록 제거
-    t = text.strip()
-    if t.startswith("```"):
-        first_nl = t.find("\n")
-        if first_nl > 0:
-            t = t[first_nl + 1:]
-        if t.endswith("```"):
-            t = t[:-3]
-        t = t.strip()
-
-    try:
-        data = json.loads(t)
-    except json.JSONDecodeError:
-        # JSON 추출 실패 시 { ... } 블록만 스캔
-        start = t.find("{")
-        end = t.rfind("}")
-        if start >= 0 and end > start:
-            data = json.loads(t[start:end + 1])
-        else:
-            raise ValueError(f"Claude 응답을 JSON으로 파싱 실패: {text[:200]}")
-
-    # 필수 필드 기본값 보정
-    return {
-        "diagnosis": data.get("diagnosis", ""),
-        "risk_level": data.get("risk_level", "routine"),
-        "differential_diagnosis": data.get("differential_diagnosis", []),
-        "recommendations": data.get("recommendations", []),
-        "clinical_reasoning": data.get("clinical_reasoning", ""),
-    }
 
 
 async def generate_integrated_report(encounter_id: str) -> dict[str, Any]:
@@ -204,14 +241,13 @@ async def generate_integrated_report(encounter_id: str) -> dict[str, Any]:
 
     Returns:
         {
-          "diagnosis": str,
-          "risk_level": "critical" | "urgent" | "routine",
-          "differential_diagnosis": list[str],
-          "recommendations": list[dict],
-          "clinical_reasoning": str,
-          "modal_results": dict,   # 참고용: Bedrock에 투입된 모달 원본
-          "patient_context": dict, # 참고용: 환자 컨텍스트
+          "narrative": str,        # Claude의 5항목 자연어 서술
+          "model_used": str,       # 실제 사용된 모델 ID (Haiku / Sonnet)
+          "similar_cases": list,   # RAG 검색 결과 메타데이터
         }
+
+    risk_level은 여기서 결정하지 않는다.
+    각 모달(ECG/CXR/LAB)의 risk_level을 max-aggregation 하여 클라이언트가 결정.
     """
     # 1. 환자 컨텍스트 조회
     encounter = await ops_encounters.get_encounter(encounter_id)
@@ -221,12 +257,14 @@ async def generate_integrated_report(encounter_id: str) -> dict[str, Any]:
     # 2. 모달 원본 조회 (ECG/CXR/LAB)
     modal_results = await ops_modal_results.get_all_modal_results(encounter_id)
 
-    # 3. RAG 검색 — 영문 query → ChromaDB → 유사 사례 3건
+    # 3. RAG 검색용 query는 RAG 가용성과 무관하게 항상 빌드
+    #    (RAG 실패해도 select_model의 critical keyword 검출이 동작해야 함)
+    rag_query = _build_rag_query(encounter, modal_results)
+
     similar_cases: list[dict] = []
     rag = _get_retriever()
     if rag is not None:
         try:
-            rag_query = _build_rag_query(encounter, modal_results)
             search = rag.search(rag_query)
             if not search.get("fallback"):
                 similar_cases = search.get("results", [])
@@ -237,39 +275,43 @@ async def generate_integrated_report(encounter_id: str) -> dict[str, Any]:
         except Exception as e:
             logger.warning("[rag] 검색 실패 (RAG 없이 진행): %s", e)
 
-    # 4. Bedrock 프롬프트 구성 (모달 + RAG 사례 포함)
+    # 4. 모델 라우팅 — 케이스 난이도 기반 Haiku/Sonnet 자동 선택
+    model_id = select_model(similar_cases, rag_query)
+    model_name = "Sonnet" if "sonnet" in model_id else "Haiku"
+
+    # 5. Bedrock 프롬프트 구성 (모달 + RAG 사례)
     user_prompt = _build_user_prompt(encounter, modal_results, similar_cases)
 
     logger.info(
-        "[report_generator] Bedrock invoke (enc=%s, modals=%s, rag_cases=%d)",
-        encounter_id, list(modal_results.keys()), len(similar_cases),
+        "[report_generator] Bedrock invoke (enc=%s, modals=%s, rag_cases=%d, model=%s)",
+        encounter_id, list(modal_results.keys()), len(similar_cases), model_name,
     )
 
-    # 5. Claude 호출
-    raw_text = invoke_claude(
+    # 6. Claude 호출 — narrative 자유서술 출력
+    narrative = invoke_claude(
         system=SYSTEM_PROMPT,
         user=user_prompt,
-        max_tokens=4096,   # Sonnet 4.6 같은 모델은 자세히 답하므로 여유 있게
+        max_tokens=LLM_MAX_TOKENS,
         temperature=0.3,
+        model_id=model_id,
     )
 
-    # 6. 파싱
-    parsed = _parse_claude_response(raw_text)
-
-    # 참고용 데이터 포함 반환 (API 레이어에서 필요 시 제외 가능)
-    parsed["_modal_results"] = modal_results
-    parsed["_patient_context"] = {
-        "age": encounter.get("patient_age"),
-        "gender": encounter.get("patient_gender"),
-        "chief_complaint": encounter.get("chief_complaint"),
+    return {
+        "narrative": narrative,
+        "model_used": model_name,
+        "similar_cases": [
+            {
+                "chunk_type": (c.get("metadata") or {}).get("chunk_type"),
+                "hadm_id": (c.get("metadata") or {}).get("hadm_id"),
+                "similarity": c.get("similarity"),
+                "snippet": (c.get("document") or "")[:300],
+            }
+            for c in similar_cases
+        ],
+        "_modal_results": modal_results,
+        "_patient_context": {
+            "age": encounter.get("patient_age"),
+            "gender": encounter.get("patient_gender"),
+            "chief_complaint": encounter.get("chief_complaint"),
+        },
     }
-    parsed["similar_cases"] = [
-        {
-            "chunk_type": (c.get("metadata") or {}).get("chunk_type"),
-            "hadm_id": (c.get("metadata") or {}).get("hadm_id"),
-            "similarity": c.get("similarity"),
-            "snippet": (c.get("document") or "")[:300],
-        }
-        for c in similar_cases
-    ]
-    return parsed

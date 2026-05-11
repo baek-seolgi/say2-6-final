@@ -11,6 +11,7 @@ GET /encounters/{id}/observations     → 바이탈 + 모달 결과 (ECG/CXR)
 GET /encounters/{id}/conditions       → 주호소 + 과거력
 GET /encounters/{id}/service-requests → AI 제안 목록 (승인/기각 대기 중인 것)
 GET /encounters/{id}/timeline         → 모달 진행 타임라인 (UI Exam Progress)
+GET /encounters/{id}/modal-results    → ops_modal_results의 raw_response (대시보드용)
 
 [호출하는 곳]
 프론트엔드 대시보드에서 환자 선택 시
@@ -167,3 +168,29 @@ async def get_encounter_timeline(encounter_id: str):
         s["status"] = "current" if s["at"] == last_at else "completed"
 
     return {"encounter_id": encounter_id, "events": events, "stages": stages}
+
+
+@router.get("/{encounter_id}/modal-results")
+async def get_encounter_modal_results(encounter_id: str):
+    """
+    이 encounter의 모든 모달 raw_response 반환.
+    프론트 대시보드가 CXR/ECG/LAB 탭별로 결과 그릴 때 사용.
+
+    응답 예:
+      {
+        "encounter_id": "1152",
+        "results": {
+          "CXR": { ...chest-svc-pre PredictResponse... },
+          "ECG": { ...ecg-svc PredictResponse... },
+          "LAB": { ...lab-svc PredictResponse... }
+        }
+      }
+    """
+    from app.db import modal_results as ops_modal_results
+
+    try:
+        all_raws = await ops_modal_results.get_all_modal_results(encounter_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"modal-results 조회 실패: {e}") from e
+
+    return {"encounter_id": encounter_id, "results": all_raws}
