@@ -30,6 +30,12 @@ venv/
 # Node
 node_modules/
 frontend/dist/
+# TypeScript incremental build cache (regenerated on each build)
+*.tsbuildinfo
+
+# Python test/profiling caches
+.hypothesis/
+.pytest_cache/
 
 # IDE
 .idea/
