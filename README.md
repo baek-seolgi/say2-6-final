@@ -7,6 +7,7 @@
 | **AWS 배포 설계 (네트워크/DB/보안/관측)** | [`AWS/`](AWS/) |
 | **중앙 백엔드 (FastAPI + RAG + Bedrock)** | [`final/central/backend/`](final/central/backend/) |
 | **웹 프론트엔드 (Vite + React)** | [`frontend/`](frontend/) |
+| **모바일 앱 (Flutter, 계획 단계)** | [`mobile/`](mobile/) |
 | **로컬 개발 환경 (docker-compose)** | [`final/central/infra/`](final/central/infra/) |
 | **운영 가이드 (배포·FHIR·아키텍처)** | [`final/central/`](final/central/) — `DEPLOYMENT.md`, `FHIR-GUIDE.md`, `QUICKSTART.md` |
 | **백엔드 상세 문서 (아키텍처·로직·RAG)** | [`final/central/docs/`](final/central/docs/) |
