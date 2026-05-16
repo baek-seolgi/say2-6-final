@@ -1,3 +1,22 @@
+# say-6 — 응급실 멀티모달 AI 진단 보조
+
+## 📍 문서 지도 (어디서 뭘 보면 되나)
+
+| 영역 | 위치 |
+|---|---|
+| **AWS 배포 설계 (네트워크/DB/보안/관측)** | [`AWS/`](AWS/) |
+| **중앙 백엔드 (FastAPI + RAG + Bedrock)** | [`final/central/backend/`](final/central/backend/) |
+| **웹 프론트엔드 (Vite + React)** | [`frontend/`](frontend/) |
+| **로컬 개발 환경 (docker-compose)** | [`final/central/infra/`](final/central/infra/) |
+| **운영 가이드 (배포·FHIR·아키텍처)** | [`final/central/`](final/central/) — `DEPLOYMENT.md`, `FHIR-GUIDE.md`, `QUICKSTART.md` |
+| **백엔드 상세 문서 (아키텍처·로직·RAG)** | [`final/central/docs/`](final/central/docs/) |
+| **ECG/CXR/LAB 모달 서비스 소스** | [`ecg-svc/`](ecg-svc/), [`chest-svc-pre/`](chest-svc-pre/), [`Lab-svc/`](Lab-svc/) |
+| ⚠️ **옛 문서 (archive — 참고만)** | [`docs/archive/`](docs/archive/) |
+
+> 새 작업 시작 전: 위 표의 활성 문서를 보세요. `docs/archive/` 안의 .md는 4월 초안·통합 시점 메모·모달 학습 시절 자료로, 현재 코드의 진실원이 아닙니다.
+
+---
+
 # 🫀 ECG 모달 — MIMIC-IV 기반 24개 질환 다중 분류
 
 > 멀티모달 임상 의사결정 지원 시스템의 심전도(ECG) 분석 컴포넌트  
