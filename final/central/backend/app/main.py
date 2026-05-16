@@ -87,9 +87,22 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to load ML models: {e}")
         logger.warning("Decision engine will use fallback mode")
 
+    # HAPI 동기화 재시도 워커 (Graceful Degradation)
+    # HAPI 일시 다운 시 fhir_sync_queue에 적재된 row를 5분마다 백필
+    retry_task = None
+    try:
+        import asyncio
+        from app.agent.fhir_retry_worker import fhir_retry_loop
+        retry_task = asyncio.create_task(fhir_retry_loop())
+        logger.info("✓ FHIR retry worker scheduled (interval=5min)")
+    except Exception as e:
+        logger.warning("FHIR retry worker 시작 실패: %s", e)
+
     yield
 
     # Shutdown
+    if retry_task and not retry_task.done():
+        retry_task.cancel()
     try:
         await db.close_pool()
     except Exception as e:

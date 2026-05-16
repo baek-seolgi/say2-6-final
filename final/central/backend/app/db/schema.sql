@@ -145,3 +145,32 @@ DROP TRIGGER IF EXISTS trg_me_fill_subject  ON modal_events;
 CREATE TRIGGER trg_me_fill_subject
 BEFORE INSERT OR UPDATE OF encounter_id ON modal_events
 FOR EACH ROW EXECUTE FUNCTION _fill_subject_id();
+
+
+-- ================================================================
+-- 6. fhir_sync_queue: HAPI 동기화 백로그 (Graceful Degradation)
+--    HAPI 일시 다운 시 운영 DB INSERT는 정상 진행되고,
+--    HAPI 동기화는 이 큐에 적재 → retry worker가 백필.
+--    의사 화면은 HAPI 다운을 모르고 정상 동작.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS fhir_sync_queue (
+    id            BIGSERIAL PRIMARY KEY,
+    encounter_id  TEXT NOT NULL,
+    patient_id    TEXT,
+    resource_type VARCHAR(40) NOT NULL,                  -- Patient/Encounter/ServiceRequest/Condition/...
+    resource_id   TEXT NOT NULL,                         -- 우리가 발급한 UUID (PUT 대상)
+    payload       JSONB NOT NULL,                        -- HAPI에 보낼 FHIR JSON 원본
+    status        VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending / synced / failed
+    retry_count   INTEGER NOT NULL DEFAULT 0,
+    last_error    TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    synced_at     TIMESTAMPTZ
+);
+
+-- 부분 인덱스 — pending row만 빠르게 (성능 최적화)
+CREATE INDEX IF NOT EXISTS idx_fsq_pending
+    ON fhir_sync_queue(status, created_at)
+    WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS idx_fsq_encounter
+    ON fhir_sync_queue(encounter_id);

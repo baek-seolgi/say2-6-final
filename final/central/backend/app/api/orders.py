@@ -36,6 +36,7 @@ from typing import Optional
 from app.fhir import client as fhir
 from app.fhir.state_machine import (
     transition_service_request,
+    transition_service_request_safe,
     InvalidTransitionError,
 )
 from app.fhir.resources import (
@@ -45,6 +46,7 @@ from app.fhir.resources import (
 from app.api.ws import broadcast
 from app.clients.modal_http import invoke_modal, ModalCallError, MODAL_SERVICE_URLS
 from app.db import modal_results as ops_modal_results
+from app.db import fhir_sync_queue as ops_fhir_queue
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -66,14 +68,26 @@ async def _execute_modal_and_complete(sr_id: str, sr: dict):
     modality = _detect_modality(code_coding)
 
     try:
-        # DocumentReference 등록 (원본 파일 URL → FHIR)
+        # DocumentReference 등록 — graceful (HAPI 다운 시 큐로)
         docref_id = None
         docref_info = _get_docref_info(modality)
         if docref_info:
-            docref_res = await fhir.create("DocumentReference", build_document_reference(
+            import uuid as _uuid
+            docref_id = str(_uuid.uuid4())
+            docref_payload = build_document_reference(
                 patient_id, encounter_id, **docref_info
-            ))
-            docref_id = docref_res["id"]
+            )
+            try:
+                await fhir.update("DocumentReference", docref_id, docref_payload)
+            except Exception as e:
+                logger.warning("[hapi] DocumentReference 동기화 실패, 큐로: %s", e)
+                await ops_fhir_queue.enqueue(
+                    encounter_id=encounter_id, patient_id=patient_id,
+                    resource_type="DocumentReference",
+                    resource_id=docref_id,
+                    payload=docref_payload,
+                    last_error=str(e)[:500],
+                )
 
         # 타임라인용 — 모달 호출 시작 (UI: "Imaging in Progress")
         await broadcast(encounter_id, {
@@ -141,8 +155,17 @@ async def _execute_modal_and_complete(sr_id: str, sr: dict):
         # → 종합 판단은 운영 DB에서 원본 JSON을 그대로 읽어 Bedrock에 투입.
         # → EMR 외부 연동은 의사 서명된 DiagnosticReport(final)만 수행.
 
-        # SR: active → completed
-        await transition_service_request(sr_id, "completed")
+        # SR: active → completed — graceful
+        ok, err = await transition_service_request_safe(sr_id, "completed")
+        if not ok and not isinstance(err, InvalidTransitionError):
+            logger.warning("[hapi] SR transition completed 실패, 큐로: %s", err)
+            await ops_fhir_queue.enqueue(
+                encounter_id=encounter_id, patient_id=patient_id,
+                resource_type="ServiceRequestTransition",
+                resource_id=sr_id,
+                payload={"new_status": "completed"},
+                last_error=str(err)[:500],
+            )
 
         # WebSocket 푸시 (모달 결과)
         # payload = 모달 서비스의 원본 응답 전체. 프론트가 풍부한 UI를 즉시 렌더링하는 데 사용.
@@ -161,19 +184,34 @@ async def _execute_modal_and_complete(sr_id: str, sr: dict):
 
     except Exception as e:
         logger.exception(f"Modal execution failed for SR/{sr_id}")
-        # 실패 시 SR: active → revoked, note에 에러 기록
+        # 실패 시 SR: active → revoked, note에 에러 기록 — graceful
         try:
             await fhir.patch("ServiceRequest", sr_id, {
                 "status": "revoked",
                 "note": [{"text": f"모달 실행 실패: {str(e)}"}],
             })
+        except Exception as patch_err:
+            logger.warning("[hapi] SR revoked patch 실패, 큐로: %s", patch_err)
+            try:
+                await ops_fhir_queue.enqueue(
+                    encounter_id=encounter_id, patient_id=patient_id,
+                    resource_type="ServiceRequestPatch",
+                    resource_id=sr_id,
+                    payload={"status": "revoked", "note": [{"text": f"모달 실행 실패: {str(e)}"}]},
+                    last_error=str(patch_err)[:500],
+                )
+            except Exception:
+                logger.exception("SR revoked 큐 적재 실패")
+
+        # broadcast는 HAPI와 무관 (운영 DB의 modal_events 사용)
+        try:
             await broadcast(encounter_id, {
                 "event": "modal_failed",
                 "service_request_id": sr_id,
                 "error": str(e),
             })
         except Exception:
-            logger.exception("Failed to update SR after modal error")
+            logger.exception("modal_failed broadcast 실패")
 
 
 async def _build_modal_payload(
@@ -653,17 +691,43 @@ async def approve_order(sr_id: str, background_tasks: BackgroundTasks):
     """
     의사 [Proceed X] 클릭: AI 추천 모달을 그대로 실행.
     draft → active → 모달 실행 → completed.
+
+    Graceful Degradation:
+      - HAPI 다운 시 SR 상태 전이는 큐로 우회
+      - SR 정보는 운영 DB(또는 메모리)에서 복구하여 모달 실행 계속
+      - 의사 [승인] 버튼은 절대 막히지 않음
     """
     try:
-        await transition_service_request(sr_id, "active")
-        sr = await fhir.read("ServiceRequest", sr_id)
+        # Tier 1: SR 상태 전이 graceful
+        ok, err = await transition_service_request_safe(sr_id, "active")
+        if not ok:
+            if isinstance(err, InvalidTransitionError):
+                # 정당한 거부 (이미 active/completed 등) — 그대로 반환
+                raise HTTPException(status_code=409, detail=str(err))
+            # HAPI 다운 → 큐로 적재, 모달 실행은 계속
+            logger.warning("[hapi] SR transition active 실패, 큐로: %s", err)
+            await ops_fhir_queue.enqueue(
+                encounter_id="(from-sr)",  # SR 정보 없으니 (from-sr) 마커
+                patient_id=None,
+                resource_type="ServiceRequestTransition",
+                resource_id=sr_id,
+                payload={"new_status": "active"},
+                last_error=str(err)[:500],
+            )
 
-        # 모달 실행을 백그라운드로
+        # SR 정보 조회 — HAPI 다운 시 비어있을 수 있어 graceful
+        try:
+            sr = await fhir.read("ServiceRequest", sr_id)
+        except Exception as e:
+            logger.warning("[hapi] SR read 실패, 모달 실행은 계속: %s", e)
+            sr = {"id": sr_id}  # 최소 정보만으로 진행
+
+        # 모달 실행을 백그라운드로 (HAPI 다운 무관)
         background_tasks.add_task(_execute_modal_and_complete, sr_id, sr)
 
         return {"service_request_id": sr_id, "status": "active"}
-    except InvalidTransitionError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Order approve failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -696,6 +760,7 @@ async def request_order(
         from app.agent.tools import propose_order
 
         # 1. SR(draft) 생성 — AI 제안이 아닌 "의사 직접 오더"로 명시
+        # propose_order는 이미 graceful (HAPI 실패 시 큐 적재)
         reason = body.reason or f"의사 직접 오더: {body.modality}"
         sr = await propose_order(
             patient_id=body.patient_id,
@@ -706,9 +771,36 @@ async def request_order(
         )
         sr_id = sr["id"]
 
-        # 2. 즉시 active로 전이 (의사가 이미 결정한 것이므로 추가 승인 불필요)
-        await transition_service_request(sr_id, "active")
-        sr_full = await fhir.read("ServiceRequest", sr_id)
+        # 2. 즉시 active로 전이 — graceful
+        ok, err = await transition_service_request_safe(sr_id, "active")
+        if not ok:
+            if not isinstance(err, InvalidTransitionError):
+                logger.warning("[hapi] SR transition active 실패(direct), 큐로: %s", err)
+                await ops_fhir_queue.enqueue(
+                    encounter_id=body.encounter_id, patient_id=body.patient_id,
+                    resource_type="ServiceRequestTransition",
+                    resource_id=sr_id,
+                    payload={"new_status": "active"},
+                    last_error=str(err)[:500],
+                )
+
+        # SR 정보 (모달 호출에 필요) — HAPI 다운 시 최소 정보로 진행
+        try:
+            sr_full = await fhir.read("ServiceRequest", sr_id)
+        except Exception as e:
+            logger.warning("[hapi] SR read 실패 (direct), 최소 정보로 진행: %s", e)
+            # 모달 호출에 필요한 정보만 만들어 전달
+            from app.fhir.codes import LOINC_MODALITY
+            mod_key = body.modality.lower()
+            sr_full = {
+                "id": sr_id,
+                "subject": {"reference": f"Patient/{body.patient_id}"},
+                "encounter": {"reference": f"Encounter/{body.encounter_id}"},
+                "code": {"coding": [{
+                    "system": "http://loinc.org",
+                    **LOINC_MODALITY.get(mod_key, {"code": "unknown", "display": body.modality}),
+                }]},
+            }
 
         # 3. 백그라운드에서 모달 실행
         background_tasks.add_task(_execute_modal_and_complete, sr_id, sr_full)

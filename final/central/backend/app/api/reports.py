@@ -23,12 +23,14 @@ from app.fhir import client as fhir
 from app.fhir.resources import build_diagnostic_report
 from app.fhir.state_machine import (
     transition_diagnostic_report,
+    transition_diagnostic_report_safe,
     InvalidTransitionError,
 )
 from app.api.ws import broadcast
 from app.agent.report_generator import generate_integrated_report
 from app.db import diagnostic_reports as ops_reports
 from app.db import encounters as ops_encounters
+from app.db import fhir_sync_queue as ops_fhir_queue
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,6 +39,10 @@ router = APIRouter()
 class SignBody(BaseModel):
     signed_by: Optional[str] = None       # 의사 ID/이름
     physician_edits: Optional[str] = None # 의사 수정 내용 (선택)
+
+
+class ReviewBody(BaseModel):
+    physician_edits: Optional[str] = None # 의사 검토 중 본문 수정 내용 (선택)
 
 
 # ── 종합 소견서 생성 ─────────────────────────────────────
@@ -84,32 +90,47 @@ async def generate_report(encounter_id: str):
             ai_risk_level="routine",
         )
 
-        # 4. FHIR DiagnosticReport 저장 — narrative를 conclusion에 그대로 저장
+        # 4. FHIR DiagnosticReport 저장 — graceful (HAPI 다운 시 큐로)
         fhir_report_id: str | None = existing_fhir_id
+        fhir_body = build_diagnostic_report(
+            patient_id=fhir_patient_id,
+            encounter_id=fhir_encounter_id,
+            observation_ids=[],
+            conclusion=narrative,
+        )
+
+        if not fhir_report_id:
+            # 신규 — 우리가 UUID 발급
+            import uuid as _uuid
+            fhir_report_id = str(_uuid.uuid4())
+
         try:
-            fhir_body = build_diagnostic_report(
-                patient_id=fhir_patient_id,
-                encounter_id=fhir_encounter_id,
-                observation_ids=[],
-                conclusion=narrative,
-            )
-
-            if existing_fhir_id:
-                fhir_res = await fhir.update("DiagnosticReport", existing_fhir_id, fhir_body)
-            else:
-                fhir_res = await fhir.create("DiagnosticReport", fhir_body)
-            fhir_report_id = fhir_res.get("id")
-
-            # 5. 운영 DB에 FHIR ID 역참조 저장 (신규 생성 시에만 필요)
-            if fhir_report_id and fhir_report_id != existing_fhir_id:
+            await fhir.update("DiagnosticReport", fhir_report_id, fhir_body)
+            # 운영 DB에 FHIR ID 역참조 저장 (신규 생성 시에만 필요)
+            if fhir_report_id != existing_fhir_id:
                 from app.db import client as db
                 await db.execute(
                     "UPDATE diagnostic_reports SET fhir_report_id = $2 WHERE id = $1",
                     report_id, fhir_report_id,
                 )
         except Exception as e:
-            # FHIR 저장 실패해도 운영 DB 소견서는 유효 → 프론트는 즉시 확인 가능
-            logger.warning("[FHIR] DiagnosticReport 저장 실패: %s", e)
+            logger.warning("[hapi] DiagnosticReport 동기화 실패, 큐로: %s", e)
+            await ops_fhir_queue.enqueue(
+                encounter_id=encounter_id, patient_id=fhir_patient_id,
+                resource_type="DiagnosticReport",
+                resource_id=fhir_report_id, payload=fhir_body,
+                last_error=str(e)[:500],
+            )
+            # 운영 DB에는 우리가 발급한 fhir_report_id 그대로 저장
+            if fhir_report_id != existing_fhir_id:
+                try:
+                    from app.db import client as db
+                    await db.execute(
+                        "UPDATE diagnostic_reports SET fhir_report_id = $2 WHERE id = $1",
+                        report_id, fhir_report_id,
+                    )
+                except Exception as db_err:
+                    logger.warning("[ops_db] fhir_report_id 저장 실패: %s", db_err)
 
         # 6. WebSocket 브로드캐스트
         await broadcast(encounter_id, {
@@ -141,7 +162,7 @@ async def generate_report(encounter_id: str):
 
 # ── 의사 서명 ───────────────────────────────────────────
 @router.post("/{report_id}/sign")
-async def sign_report(report_id: str, body: SignBody = SignBody()):
+async def sign_report(report_id: int, body: SignBody = SignBody()):
     """
     의사 최종 서명.
       - 운영 DB: status preliminary → signed
@@ -160,14 +181,22 @@ async def sign_report(report_id: str, body: SignBody = SignBody()):
         if body.physician_edits:
             await ops_reports.update_physician_edits(report_id, body.physician_edits)
 
-        # 3. FHIR DiagnosticReport 상태 전이
+        # 3. FHIR DiagnosticReport 상태 전이 — graceful
         if fhir_report_id:
-            try:
-                await transition_diagnostic_report(fhir_report_id, "final")
-            except InvalidTransitionError as e:
-                raise HTTPException(status_code=409, detail=str(e))
-            except Exception as e:
-                logger.warning("FHIR DiagnosticReport 상태 전이 실패: %s", e)
+            ok, err = await transition_diagnostic_report_safe(fhir_report_id, "final")
+            if not ok:
+                if isinstance(err, InvalidTransitionError):
+                    raise HTTPException(status_code=409, detail=str(err))
+                # HAPI 다운 → 큐로 적재, 운영 DB 서명은 계속
+                logger.warning("[hapi] DR transition final 실패, 큐로: %s", err)
+                await ops_fhir_queue.enqueue(
+                    encounter_id=str(report.get("encounter_id", "")),
+                    patient_id=None,
+                    resource_type="DiagnosticReportTransition",
+                    resource_id=fhir_report_id,
+                    payload={"new_status": "final"},
+                    last_error=str(err)[:500],
+                )
 
         # 4. 운영 DB 서명 플래그
         await ops_reports.mark_signed(
@@ -199,3 +228,56 @@ async def sign_report(report_id: str, body: SignBody = SignBody()):
     except Exception as e:
         logger.exception("Report sign failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── 의사 검토 — preliminary → reviewed ───────────────────
+@router.patch("/{report_id}/review")
+async def review_report(report_id: int, body: ReviewBody = ReviewBody()):
+    """
+    의사 검토 시작/저장.
+      - 운영 DB: status preliminary → reviewed
+      - physician_edits 가 있으면 본문 수정 내용도 저장 (검토 중 재저장 허용)
+      - signed 상태인 소견서는 상태를 되돌리지 않음
+    """
+    try:
+        report = await ops_reports.get_report(report_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail=f"Report not found: {report_id}")
+
+        await ops_reports.mark_reviewed(report_id, body.physician_edits)
+
+        encounter_id = str(report.get("encounter_id", ""))
+        if encounter_id:
+            await broadcast(encounter_id, {
+                "event": "report_reviewed",
+                "report_id": report_id,
+            })
+
+        return {
+            "report_id": report_id,
+            "encounter_id": encounter_id,
+            "status": "reviewed",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Report review failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── encounter별 최신 소견서 조회 ─────────────────────────
+@router.get("/by-encounter/{encounter_id}")
+async def get_report_by_encounter(encounter_id: str):
+    """해당 encounter의 최신 소견서 조회. 없으면 null."""
+    return await ops_reports.get_by_encounter(encounter_id)
+
+
+# ── 소견서 목록 (status 필터) ────────────────────────────
+@router.get("/list")
+async def list_reports(status: Optional[str] = None, limit: int = 50):
+    """
+    소견서 목록 — status 필터 가능 (preliminary / reviewed / signed).
+    종합소견서 페이지 / 환자 목록의 검토·서명 대기 리스트용.
+    """
+    return await ops_reports.list_recent(limit=limit, status=status)

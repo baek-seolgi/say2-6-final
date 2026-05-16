@@ -69,3 +69,36 @@ async def transition_diagnostic_report(dr_id: str, new_status: str) -> dict:
     return await fhir_client.patch(
         "DiagnosticReport", dr_id, {"status": new_status}
     )
+
+
+# ── Graceful 헬퍼 ─────────────────────────────────────────
+# HAPI 다운 시 transition을 큐로 우회하기 위한 래퍼.
+# InvalidTransitionError는 (정당한 거부 — 그대로 raise)
+# 그 외 예외 (ConnectError·5xx 등) → 호출자가 큐에 적재해서 처리
+
+async def transition_service_request_safe(sr_id: str, new_status: str) -> tuple[bool, Exception | None]:
+    """
+    Graceful SR transition.
+    Returns: (success, error)
+      - (True, None): HAPI 정상 동작
+      - (False, InvalidTransitionError): 정당한 거부 (재시도 무의미)
+      - (False, other_exception): HAPI 다운 등 → 호출자가 큐 처리
+    """
+    try:
+        await transition_service_request(sr_id, new_status)
+        return True, None
+    except InvalidTransitionError as e:
+        return False, e
+    except Exception as e:
+        return False, e
+
+
+async def transition_diagnostic_report_safe(dr_id: str, new_status: str) -> tuple[bool, Exception | None]:
+    """Graceful DR transition — 동일 패턴."""
+    try:
+        await transition_diagnostic_report(dr_id, new_status)
+        return True, None
+    except InvalidTransitionError as e:
+        return False, e
+    except Exception as e:
+        return False, e

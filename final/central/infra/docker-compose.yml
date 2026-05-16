@@ -57,7 +57,8 @@ services:
       - AWS_REGION=ap-northeast-2
       # 모달 서비스 URL — 모두 우리 EC2 52.79.251.216 (t3.large, 사이드카 통합)
       - LAB_SERVICE_URL=http://52.79.251.216:8000
-      - BLOOD_PROGNOSIS_URL=http://52.79.251.216:8001
+      # 6시간 후 악화 예측 — 로컬 lab-svc-local 컨테이너 (ECS 시뮬레이션, infra_default 네트워크)
+      - BLOOD_PROGNOSIS_URL=http://lab-svc-local:8000
       - CXR_SERVICE_URL=http://52.79.251.216:8002
       - ECG_SERVICE_URL=http://52.79.251.216:8003
     volumes:

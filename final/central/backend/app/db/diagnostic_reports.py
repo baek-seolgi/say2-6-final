@@ -65,7 +65,7 @@ async def insert_report(
     return report_id
 
 
-async def get_report(report_id: str) -> dict[str, Any] | None:
+async def get_report(report_id: int) -> dict[str, Any] | None:
     row = await db.fetchone(
         "SELECT * FROM diagnostic_reports WHERE id = $1", report_id,
     )
@@ -97,7 +97,7 @@ async def get_by_encounter(encounter_id: str) -> dict[str, Any] | None:
 
 
 async def update_physician_edits(
-    report_id: str,
+    report_id: int,
     physician_edits: str,
 ) -> None:
     """의사 수정 내용 반영."""
@@ -111,8 +111,28 @@ async def update_physician_edits(
     )
 
 
+async def mark_reviewed(
+    report_id: int,
+    physician_edits: str | None = None,
+) -> None:
+    """
+    의사 검토 — status: preliminary → reviewed.
+    이미 signed 인 소견서는 상태를 되돌리지 않는다.
+    physician_edits가 주어지면 본문 수정 내용도 함께 저장 (검토 중 재저장 허용).
+    """
+    await db.execute(
+        """
+        UPDATE diagnostic_reports
+        SET status = CASE WHEN status = 'signed' THEN status ELSE 'reviewed' END,
+            physician_edits = COALESCE($2, physician_edits)
+        WHERE id = $1
+        """,
+        report_id, physician_edits,
+    )
+
+
 async def mark_signed(
-    report_id: str,
+    report_id: int,
     signed_by: str,
     fhir_report_id: str | None = None,
 ) -> None:

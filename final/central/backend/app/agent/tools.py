@@ -16,9 +16,11 @@ AI Agent(FusionDecisionEngine)가 판단한 결과를 실제 행동으로 옮기
 from __future__ import annotations
 
 import logging
+import uuid
 from app.fhir import client as fhir
 from app.fhir.resources import build_service_request
 from app.fhir.codes import LOINC_MODALITY
+from app.db import fhir_sync_queue as ops_fhir_queue
 
 logger = logging.getLogger(__name__)
 
@@ -30,18 +32,42 @@ async def propose_order(
     reason_text: str,
     priority: str = "routine",
 ) -> dict:
-    """Agent가 다음 모달을 제안 → ServiceRequest(draft) 생성."""
+    """Agent가 다음 모달을 제안 → ServiceRequest(draft) 생성.
+
+    Graceful Degradation:
+      - SR ID는 우리가 UUID로 발급 (HAPI 의존 X)
+      - HAPI PUT 실패 시 fhir_sync_queue에 적재 후 ID 반환
+      - 의사 화면은 HAPI 다운 모르고 정상 동작
+    """
     modality_key = modality.lower()
     code_coding = {
         "system": "http://loinc.org",
         **(LOINC_MODALITY.get(modality_key, {"code": "unknown", "display": modality})),
     }
-    sr = build_service_request(
+    sr_payload = build_service_request(
         patient_id, encounter_id, code_coding, reason_text, priority
     )
-    result = await fhir.create("ServiceRequest", sr)
-    logger.info(f"Agent proposed order: SR/{result['id']} for {modality}")
-    return result
+
+    sr_id = str(uuid.uuid4())  # 우리가 ID 발급
+    try:
+        result = await fhir.update("ServiceRequest", sr_id, sr_payload)
+        logger.info(f"Agent proposed order: SR/{result['id']} for {modality}")
+        return result
+    except Exception as e:
+        logger.warning(
+            "[hapi] ServiceRequest 동기화 실패, 큐로: %s/%s err=%s",
+            modality, sr_id, str(e)[:200],
+        )
+        await ops_fhir_queue.enqueue(
+            encounter_id=encounter_id,
+            patient_id=patient_id,
+            resource_type="ServiceRequest",
+            resource_id=sr_id,
+            payload=sr_payload,
+            last_error=str(e)[:500],
+        )
+        # 큐에 적재됐으니 ID 반환 — 의사 화면은 정상 동작
+        return {"id": sr_id, "status": "draft", "_queued": True}
 
 
 async def get_encounter_context(encounter_id: str) -> dict:

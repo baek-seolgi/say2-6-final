@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -42,6 +43,7 @@ from app.agent.decision_engine import FusionDecisionEngine
 from app.agent.tools import propose_order
 from app.api.ws import broadcast
 from app.db import encounters as ops_encounters
+from app.db import fhir_sync_queue as ops_fhir_queue
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -115,43 +117,97 @@ async def _write_secondary_resources(
 ):
     """
     핵심 응답(Patient/Encounter/Condition/SR) 후에 백그라운드로 쓰는 부수 리소스.
-    실패해도 핵심 흐름엔 영향 없음. asyncio.gather로 병렬 처리.
+    Graceful: HAPI 실패 시 fhir_sync_queue로 적재 → retry worker가 백필.
     """
-    coros = []
-
-    # Vitals Bundle
-    vitals_bundle = build_vitals_bundle(
-        patient_id, encounter_id, form.vitals.model_dump()
-    )
-    coros.append(fhir.transaction(vitals_bundle))
-
-    # Past History Bundle
-    if form.past_history:
-        history_bundle = build_past_history(
-            patient_id, [h.model_dump() for h in form.past_history]
+    # 각 부수 리소스를 try_put로 처리하면 실패 시 큐로 적재됨
+    # Vitals Bundle (Observation × 6)
+    try:
+        vitals_bundle = build_vitals_bundle(
+            patient_id, encounter_id, form.vitals.model_dump()
         )
-        coros.append(fhir.transaction(history_bundle))
+        try:
+            await fhir.transaction(vitals_bundle)
+        except Exception as e:
+            logger.warning("[bg-hapi] Vitals Bundle 실패, 개별 큐로: %s", e)
+            # Bundle 안의 각 Observation을 개별 큐로
+            for entry in vitals_bundle.get("entry", []):
+                resource = entry.get("resource", {})
+                if not resource:
+                    continue
+                rid = resource.get("id") or str(uuid.uuid4())
+                await ops_fhir_queue.enqueue(
+                    encounter_id=encounter_id, patient_id=patient_id,
+                    resource_type=resource.get("resourceType", "Observation"),
+                    resource_id=rid, payload=resource,
+                    last_error=str(e)[:500],
+                )
+    except Exception as e:
+        logger.exception("Vitals 처리 예외: %s", e)
 
-    # AllergyIntolerance (NKDA가 아닐 때만)
+    # Past History Bundle (Condition × N)
+    if form.past_history:
+        try:
+            history_bundle = build_past_history(
+                patient_id, [h.model_dump() for h in form.past_history]
+            )
+            try:
+                await fhir.transaction(history_bundle)
+            except Exception as e:
+                logger.warning("[bg-hapi] Past History Bundle 실패, 개별 큐로: %s", e)
+                for entry in history_bundle.get("entry", []):
+                    resource = entry.get("resource", {})
+                    if not resource:
+                        continue
+                    rid = resource.get("id") or str(uuid.uuid4())
+                    await ops_fhir_queue.enqueue(
+                        encounter_id=encounter_id, patient_id=patient_id,
+                        resource_type=resource.get("resourceType", "Condition"),
+                        resource_id=rid, payload=resource,
+                        last_error=str(e)[:500],
+                    )
+        except Exception as e:
+            logger.exception("Past History 처리 예외: %s", e)
+
+    # AllergyIntolerance (NKDA가 아닐 때만) — graceful
     if form.allergies:
-        allergy_res = build_allergy_intolerance(patient_id, form.allergies)
-        if allergy_res:
-            coros.append(fhir.create("AllergyIntolerance", allergy_res))
+        try:
+            allergy_res = build_allergy_intolerance(patient_id, form.allergies)
+            if allergy_res:
+                allergy_id = str(uuid.uuid4())
+                try:
+                    await fhir.update("AllergyIntolerance", allergy_id, allergy_res)
+                except Exception as e:
+                    logger.warning("[bg-hapi] AllergyIntolerance 실패, 큐로: %s", e)
+                    await ops_fhir_queue.enqueue(
+                        encounter_id=encounter_id, patient_id=patient_id,
+                        resource_type="AllergyIntolerance",
+                        resource_id=allergy_id, payload=allergy_res,
+                        last_error=str(e)[:500],
+                    )
+        except Exception as e:
+            logger.exception("AllergyIntolerance 처리 예외: %s", e)
 
-    # MedicationStatement
+    # MedicationStatement — graceful
     if form.medications:
-        med_res = build_medication_statement(patient_id, encounter_id, form.medications)
-        if med_res:
-            coros.append(fhir.create("MedicationStatement", med_res))
-
-    # 모두 병렬 실행 (HAPI 동시 처리)
-    results = await asyncio.gather(*coros, return_exceptions=True)
-    for r in results:
-        if isinstance(r, Exception):
-            logger.warning(f"[bg] 부수 FHIR 리소스 저장 실패: {r}")
+        try:
+            med_res = build_medication_statement(patient_id, encounter_id, form.medications)
+            if med_res:
+                med_id = str(uuid.uuid4())
+                try:
+                    await fhir.update("MedicationStatement", med_id, med_res)
+                except Exception as e:
+                    logger.warning("[bg-hapi] MedicationStatement 실패, 큐로: %s", e)
+                    await ops_fhir_queue.enqueue(
+                        encounter_id=encounter_id, patient_id=patient_id,
+                        resource_type="MedicationStatement",
+                        resource_id=med_id, payload=med_res,
+                        last_error=str(e)[:500],
+                    )
+        except Exception as e:
+            logger.exception("MedicationStatement 처리 예외: %s", e)
 
     logger.info(
-        f"[bg] enc={encounter_id} 부수 리소스 {len(coros)}개 처리 완료 "
+        f"[bg] enc={encounter_id} 부수 리소스 처리 완료 "
         f"(cc_id={cc_res.get('id')})"
     )
 
@@ -179,52 +235,65 @@ async def submit_triage(form: TriageSubmission, background_tasks: BackgroundTask
         cc_map = getattr(app.state, 'cc_map', None)
         feature_extractor = getattr(app.state, 'feature_extractor', None)
         
-        # ── 1) Patient + Encounter (직렬, encounter_id 필요) ─
-        patient_res = await fhir.create(
-            "Patient", build_patient(form.patient.model_dump())
-        )
-        patient_id = patient_res["id"]
+        # ── 1) UUID 발급 (HAPI 의존 X) ─
+        # 우리가 직접 UUID 발급 → HAPI는 client-assigned ID로 PUT
+        # → HAPI 다운해도 ID 발급 가능, 운영 DB INSERT 정상 진행
+        patient_id   = str(uuid.uuid4())
+        encounter_id = str(uuid.uuid4())
 
-        encounter_res = await fhir.create(
-            "Encounter",
-            build_encounter(
-                patient_id,
-                form.chief_complaint.model_dump(),
-                notes=form.notes,
-            ),
-        )
-        encounter_id = encounter_res["id"]
+        # ── 2) HAPI 동기화 — Graceful, 순차 호출 ─
+        # Reference 무결성 위해 순차: Patient → Encounter → Condition
+        # 각 단계 실패 시 큐로 적재 후 다음 단계는 그대로 진행
+        async def _try_put(resource_type: str, resource_id: str, payload: dict) -> bool:
+            """HAPI PUT 시도. 성공/실패 무관히 ID는 보존, 실패만 큐로."""
+            try:
+                await fhir.update(resource_type, resource_id, payload)
+                return True
+            except Exception as e:
+                logger.warning("[hapi] %s 동기화 실패, 큐로: %s", resource_type, str(e)[:200])
+                await ops_fhir_queue.enqueue(
+                    encounter_id=encounter_id, patient_id=patient_id,
+                    resource_type=resource_type, resource_id=resource_id,
+                    payload=payload, last_error=str(e)[:500],
+                )
+                return False
 
-        # ── 2) ops_db insert + Chief Complaint Condition (병렬) ─
-        ops_insert_coro = ops_encounters.insert_encounter(
-            patient_id=patient_id,
-            fhir_encounter_id=encounter_id,
-            fhir_patient_id=patient_id,
-            chief_complaint=form.chief_complaint.text,
-            patient_name=form.patient.name,
-            patient_age=form.patient.age,
-            patient_gender=form.patient.gender,
-            metadata={
-                "vitals": form.vitals.model_dump(),
-                "past_history": [h.text for h in form.past_history],
-                "complaint_detail": form.chief_complaint.detail,
-                "onset_minutes_ago": form.chief_complaint.onset_minutes_ago,
-                "mimic": form.mimic.model_dump() if form.mimic else None,
-            },
+        patient_payload   = build_patient(form.patient.model_dump())
+        encounter_payload = build_encounter(
+            patient_id, form.chief_complaint.model_dump(), notes=form.notes,
         )
-        cc_create_coro = fhir.create(
-            "Condition",
-            build_chief_complaint(
-                patient_id, encounter_id, form.chief_complaint.model_dump()
-            ),
+        cc_id = str(uuid.uuid4())
+        cc_payload = build_chief_complaint(
+            patient_id, encounter_id, form.chief_complaint.model_dump()
         )
-        ops_result, cc_res = await asyncio.gather(
-            ops_insert_coro, cc_create_coro, return_exceptions=True
-        )
-        if isinstance(ops_result, Exception):
-            logger.warning("[ops_db] encounter insert 실패: %s", ops_result)
-        if isinstance(cc_res, Exception):
-            raise cc_res  # cc_id가 응답에 필요하므로 실패하면 전체 실패
+
+        await _try_put("Patient",   patient_id,   patient_payload)
+        await _try_put("Encounter", encounter_id, encounter_payload)
+        await _try_put("Condition", cc_id,        cc_payload)
+        cc_res = {"id": cc_id}  # 큐 적재 여부 무관하게 ID는 확보됨
+
+        # ── 3) 운영 DB INSERT (HAPI 결과와 무관, 항상 진행) ─
+        try:
+            await ops_encounters.insert_encounter(
+                patient_id=patient_id,
+                fhir_encounter_id=encounter_id,
+                fhir_patient_id=patient_id,
+                chief_complaint=form.chief_complaint.text,
+                patient_name=form.patient.name,
+                patient_age=form.patient.age,
+                patient_gender=form.patient.gender,
+                metadata={
+                    "vitals": form.vitals.model_dump(),
+                    "past_history": [h.text for h in form.past_history],
+                    "complaint_detail": form.chief_complaint.detail,
+                    "onset_minutes_ago": form.chief_complaint.onset_minutes_ago,
+                    "mimic": form.mimic.model_dump() if form.mimic else None,
+                },
+            )
+        except Exception as e:
+            # 운영 DB INSERT 실패만 진짜 critical
+            logger.error("[ops_db] encounter insert 실패: %s", e)
+            raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
 
         # ── 3) AI 결정 + Primary SR (sync, sr_id 응답에 포함) ─
         central_patient = {
