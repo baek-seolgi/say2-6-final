@@ -116,3 +116,160 @@
 .animate-pulse-soft {
   animation: pulse-soft 1.6s ease-in-out infinite;
 }
+
+/* ─────────────────────────────────────────────────────────────
+   say-6 v2 디자인 — 별도 스코프 (.v2-root 안에서만 적용)
+   기존 EMR 화면의 굴림체/픽셀 톤과 격리됨
+   ──────────────────────────────────────────────────────────── */
+.v2-root,
+.v2-root * {
+  font-family:
+    "Pretendard Variable", "Pretendard",
+    -apple-system, BlinkMacSystemFont,
+    "Apple SD Gothic Neo",
+    "Noto Sans KR",
+    sans-serif !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  letter-spacing: -0.01em;
+}
+
+.v2-root {
+  font-size: 14px;
+  line-height: 1.5;
+  /* 브랜드 페이지 기본은 다크 (body의 bg-gray-200이 새어 나오지 않게) */
+  background-color: #0F172A;
+  color: #F1F5F9;
+}
+
+/* Live Demo 화면은 라이트 의료 리포트 톤 — .demo-root가 .v2-root보다 우선 */
+.v2-root.demo-root {
+  background-color: #FAFAFA;
+  color: #1A1A1A;
+}
+
+.v2-root code,
+.v2-root .font-numeric,
+.v2-root [class*="numeric"] {
+  font-family: "JetBrains Mono", "SF Mono", Consolas, Menlo, monospace !important;
+  font-variant-numeric: tabular-nums;
+}
+
+/* v2 — Critical 환자 카드 글로우 */
+.v2-critical-glow {
+  box-shadow:
+    0 0 0 1px #DC2626,
+    0 4px 12px -2px rgba(220, 38, 38, 0.25);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Live Demo — 의료 리포트 톤 (HATIV 스타일)
+   .demo-root 안에서만 적용 (브랜드 사이트와 격리)
+   ──────────────────────────────────────────────────────────── */
+.demo-root {
+  background-color: #FAFAFA;
+  color: #1A1A1A;
+}
+
+.demo-root .demo-report-grid {
+  background-image:
+    linear-gradient(to right, rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+  background-size: 8px 8px;
+}
+
+/* HATIV 같은 의료 리포트 박스 */
+.demo-root .demo-report-box {
+  border: 1px solid #E5E5E5;
+  background: #FFFFFF;
+}
+
+.demo-root .demo-report-header {
+  background: #1A2A3A;
+  color: #FFFFFF;
+  padding: 8px 16px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* 의료 리포트용 시안 액센트 */
+.demo-root .demo-accent {
+  color: #21D4D4;
+}
+
+.demo-root .demo-border-accent {
+  border-color: #21D4D4;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   스크롤 인뷰 애니메이션 (브랜드 사이트용)
+   ──────────────────────────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translate3d(0, 24px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes splitChar {
+  from { opacity: 0; transform: translate3d(0, 40%, 0); filter: blur(8px); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0);   filter: blur(0); }
+}
+
+/* fade-up: 뷰포트 진입 시 아래에서 위로 페이드인 */
+.reveal {
+  opacity: 0;
+  transform: translate3d(0, 24px, 0);
+  will-change: opacity, transform;
+}
+.reveal.is-visible {
+  animation: fadeUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* split-char: 글자별 stagger 애니메이션 */
+.split-char {
+  display: inline-block;
+  opacity: 0;
+  transform: translate3d(0, 40%, 0);
+  filter: blur(8px);
+  will-change: opacity, transform, filter;
+}
+.split-char.is-visible {
+  animation: splitChar 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* 공백은 그대로 */
+.split-space {
+  display: inline-block;
+  width: 0.25em;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   소견서 인쇄 — A4 전용 시트(#report-print-sheet)만 출력
+   ──────────────────────────────────────────────────────────── */
+@page {
+  size: A4;
+  margin: 14mm 12mm;
+}
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #report-print-sheet,
+  #report-print-sheet * {
+    visibility: visible;
+  }
+  #report-print-sheet {
+    display: block !important;
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+}
