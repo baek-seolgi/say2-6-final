@@ -1,0 +1,905 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  say2-6team network stack - Multi-AZ VPC, 8 subnets, route tables,
+  VPC endpoints, Cloud Map namespace, and VPC Flow Logs.
+
+Metadata:
+  Project:
+    Name: say2-6team
+    Purpose: Emergency multimodal AI system network baseline
+  Notes:
+    - NAT Gateway is intentionally not created.
+    - Public subnets are for ALB.
+    - App/Data/Endpoint subnets have no default internet route.
+    - Interface VPC Endpoints are placed in dedicated Endpoint subnets across AZ-a/AZ-c.
+    - Endpoint SG is intentionally defined in this stack because Interface Endpoints require an SG at creation time.
+    - Security resources other than the Endpoint SG should be defined in security-stack.yaml.
+    - Custom NACLs are intentionally excluded from this initial network stack.
+    - Security Groups are prioritized during early integration/testing.
+    - Detailed subnet-level NACL restrictions can be added later in security-stack.yaml or a dedicated hardening stack.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: say2-6team
+    Description: Project prefix used for resource naming and tags.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment environment.
+
+  Owner:
+    Type: String
+    Default: yji
+    AllowedValues:
+      - unassigned
+      - wja
+      - lji
+      - hkt
+      - yji
+    Description: Resource owner tag value.
+
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: VPC CIDR block.
+
+  AvailabilityZoneA:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: ap-northeast-2a
+    Description: First Availability Zone.
+
+  AvailabilityZoneC:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: ap-northeast-2c
+    Description: Second Availability Zone.
+
+  EnableBedrockAgentRuntimeEndpoint:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      Set true if the application uses Amazon Bedrock Agents runtime.
+      Basic Claude/model invocation usually requires bedrock-runtime only.
+
+Mappings:
+  SubnetCidrs:
+    PublicA:
+      Cidr: 10.0.0.0/24
+    PublicC:
+      Cidr: 10.0.1.0/24
+    AppA:
+      Cidr: 10.0.10.0/24
+    AppC:
+      Cidr: 10.0.11.0/24
+    DataA:
+      Cidr: 10.0.20.0/24
+    DataC:
+      Cidr: 10.0.21.0/24
+    EndpointA:
+      Cidr: 10.0.30.0/24
+    EndpointC:
+      Cidr: 10.0.31.0/24
+
+Conditions:
+  CreateBedrockAgentRuntimeEndpoint: !Equals [!Ref EnableBedrockAgentRuntimeEndpoint, "true"]
+
+Resources:
+  ###########################################################################
+  # VPC
+  ###########################################################################
+  Say6VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-vpc"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-igw"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Say6VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  ###########################################################################
+  # Subnets - Public x2, App x2, Data x2, Endpoint x2
+  ###########################################################################
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Say6VPC
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !FindInMap [SubnetCidrs, PublicA, Cidr]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-public-subnet-a"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Tier
+          Value: public
+
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Say6VPC
+      AvailabilityZone: !Ref AvailabilityZoneC
+      CidrBlock: !FindInMap [SubnetCidrs, PublicC, Cidr]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-public-subnet-c"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Tier
+          Value: public
+
+  AppSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Say6VPC
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !FindInMap [SubnetCidrs, AppA, Cidr]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-private-app-subnet-a"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Tier
+          Value: app
+
+  AppSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Say6VPC
+      AvailabilityZone: !Ref AvailabilityZoneC
+      CidrBlock: !FindInMap [SubnetCidrs, AppC, Cidr]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-private-app-subnet-c"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Tier
+          Value: app
+
+  DataSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Say6VPC
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !FindInMap [SubnetCidrs, DataA, Cidr]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-private-data-subnet-a"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Tier
+          Value: data
+
+  DataSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Say6VPC
+      AvailabilityZone: !Ref AvailabilityZoneC
+      CidrBlock: !FindInMap [SubnetCidrs, DataC, Cidr]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-private-data-subnet-c"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Tier
+          Value: data
+
+  EndpointSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Say6VPC
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !FindInMap [SubnetCidrs, EndpointA, Cidr]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-endpoints-subnet-a"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Tier
+          Value: endpoint
+
+  EndpointSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Say6VPC
+      AvailabilityZone: !Ref AvailabilityZoneC
+      CidrBlock: !FindInMap [SubnetCidrs, EndpointC, Cidr]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-endpoints-subnet-c"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Tier
+          Value: endpoint
+
+  ###########################################################################
+  # Route Tables
+  ###########################################################################
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Say6VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-public-rt"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  AppRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Say6VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-app-rt-a"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  AppRouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Say6VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-app-rt-c"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  DataRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Say6VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-data-rt-a"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  DataRouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Say6VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-data-rt-c"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  EndpointRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Say6VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-endpoints-rt-a"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  EndpointRouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Say6VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-endpoints-rt-c"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ###########################################################################
+  # Subnet Route Table Associations
+  ###########################################################################
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetC
+      RouteTableId: !Ref PublicRouteTable
+
+  AppSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnetA
+      RouteTableId: !Ref AppRouteTableA
+
+  AppSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnetC
+      RouteTableId: !Ref AppRouteTableC
+
+  DataSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DataSubnetA
+      RouteTableId: !Ref DataRouteTableA
+
+  DataSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DataSubnetC
+      RouteTableId: !Ref DataRouteTableC
+
+  EndpointSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EndpointSubnetA
+      RouteTableId: !Ref EndpointRouteTableA
+
+  EndpointSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EndpointSubnetC
+      RouteTableId: !Ref EndpointRouteTableC
+
+  ###########################################################################
+  # NACLs
+  #
+  # Custom NACLs are intentionally not created in this initial network stack.
+  # Reason:
+  #   - Early integration/debugging is easier with default NACL behavior.
+  #   - Security Groups are the primary access-control layer for Phase 1.
+  #   - Data subnet NACL hardening can be added later after ECS/DB/Endpoint
+  #     connectivity is verified.
+  ###########################################################################
+
+  ###########################################################################
+  # Security Group for Interface VPC Endpoints
+  # This SG is intentionally placed in network-stack so endpoints can be
+  # created in the first deployment step without depending on security-stack.
+  ###########################################################################
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-endpoints-sg"
+      GroupDescription: Allow HTTPS from VPC workloads to Interface VPC Endpoints
+      VpcId: !Ref Say6VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCidr
+          Description: Allow HTTPS from resources inside the VPC
+      # Broad egress is intentionally allowed during initial integration/debugging.
+      # Endpoint subnets have no IGW/NAT default route, so direct internet egress
+      # is still blocked at the routing layer. This can be tightened later during
+      # security hardening if the team decides to enforce stricter least privilege.
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow return traffic during initial integration/debugging
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-endpoints-sg"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ###########################################################################
+  # VPC Endpoints
+  # Gateway Endpoint:
+  #   - S3: route table based, no ENI/subnet.
+  # Interface Endpoints:
+  #   - Bedrock Runtime, Secrets Manager, KMS, CloudWatch Logs, ECR API, ECR DKR.
+  ###########################################################################
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Say6VPC
+      VpcEndpointType: Gateway
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      # Endpoint route tables are intentionally excluded.
+      # Endpoint subnets host Interface Endpoint ENIs and are not expected to access S3 directly.
+      # App/Data subnets are the primary S3 consumers.
+      RouteTableIds:
+        - !Ref AppRouteTableA
+        - !Ref AppRouteTableC
+        - !Ref DataRouteTableA
+        - !Ref DataRouteTableC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-s3-gateway-endpoint"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  BedrockRuntimeEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Say6VPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.bedrock-runtime"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref EndpointSubnetA
+        - !Ref EndpointSubnetC
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-bedrock-runtime-vpce"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  BedrockAgentRuntimeEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: CreateBedrockAgentRuntimeEndpoint
+    Properties:
+      VpcId: !Ref Say6VPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.bedrock-agent-runtime"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref EndpointSubnetA
+        - !Ref EndpointSubnetC
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-bedrock-agent-runtime-vpce"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Say6VPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.secretsmanager"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref EndpointSubnetA
+        - !Ref EndpointSubnetC
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-secretsmanager-vpce"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  KMSEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Say6VPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.kms"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref EndpointSubnetA
+        - !Ref EndpointSubnetC
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-kms-vpce"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  CloudWatchLogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Say6VPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.logs"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref EndpointSubnetA
+        - !Ref EndpointSubnetC
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-logs-vpce"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ECRApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Say6VPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.api"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref EndpointSubnetA
+        - !Ref EndpointSubnetC
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ecr-api-vpce"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ECRDockerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Say6VPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.dkr"
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref EndpointSubnetA
+        - !Ref EndpointSubnetC
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ecr-dkr-vpce"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ###########################################################################
+  # Cloud Map - Private DNS Namespace for ECS Service Discovery
+  ###########################################################################
+  PrivateDnsNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub "${ProjectName}.local"
+      Vpc: !Ref Say6VPC
+      Description: !Sub "Private DNS namespace for ${ProjectName} service discovery"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-cloud-map-namespace"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ###########################################################################
+  # VPC Flow Logs to S3
+  ###########################################################################
+  VpcFlowLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-vpc-flow-logs-${AWS::AccountId}-${AWS::Region}"
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-vpc-flow-logs-after-90-days
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-vpc-flow-logs"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DataType
+          Value: audit-log
+
+  VpcFlowLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref VpcFlowLogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AWSLogDeliveryAclCheck
+            Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt VpcFlowLogsBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+          - Sid: AWSLogDeliveryWrite
+            Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${VpcFlowLogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    DependsOn: VpcFlowLogsBucketPolicy
+    Properties:
+      ResourceType: VPC
+      ResourceId: !Ref Say6VPC
+      TrafficType: ALL
+      LogDestinationType: s3
+      LogDestination: !GetAtt VpcFlowLogsBucket.Arn
+      MaxAggregationInterval: 60
+      LogFormat: >-
+        ${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr}
+        ${srcport} ${dstport} ${protocol} ${packets} ${bytes}
+        ${start} ${end} ${action} ${log-status} ${vpc-id}
+        ${subnet-id} ${instance-id} ${tcp-flags} ${type} ${pkt-srcaddr}
+        ${pkt-dstaddr} ${region} ${az-id} ${sublocation-type}
+        ${sublocation-id} ${pkt-src-aws-service} ${pkt-dst-aws-service}
+        ${flow-direction} ${traffic-path}
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-vpc-flow-log"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  VPCId:
+    Description: say2-6team VPC ID
+    Value: !Ref Say6VPC
+    Export:
+      Name: say2-6team-vpc-id
+
+  VPCCidr:
+    Description: say2-6team VPC CIDR
+    Value: !Ref VpcCidr
+    Export:
+      Name: say2-6team-vpc-cidr
+
+  PublicSubnetA:
+    Description: Public Subnet in AZ-a for ALB
+    Value: !Ref PublicSubnetA
+    Export:
+      Name: say2-6team-public-subnet-a
+
+  PublicSubnetC:
+    Description: Public Subnet in AZ-c for ALB
+    Value: !Ref PublicSubnetC
+    Export:
+      Name: say2-6team-public-subnet-c
+
+  PrivateAppSubnetA:
+    Description: Private App Subnet in AZ-a for ECS Tasks
+    Value: !Ref AppSubnetA
+    Export:
+      Name: say2-6team-private-app-subnet-a
+
+  PrivateAppSubnetC:
+    Description: Private App Subnet in AZ-c for ECS Tasks
+    Value: !Ref AppSubnetC
+    Export:
+      Name: say2-6team-private-app-subnet-c
+
+  PrivateDataSubnetA:
+    Description: Private Data Subnet in AZ-a for Aurora, HAPI, Chroma
+    Value: !Ref DataSubnetA
+    Export:
+      Name: say2-6team-private-data-subnet-a
+
+  PrivateDataSubnetC:
+    Description: Private Data Subnet in AZ-c for Aurora, HAPI, Chroma
+    Value: !Ref DataSubnetC
+    Export:
+      Name: say2-6team-private-data-subnet-c
+
+  EndpointsSubnetA:
+    Description: Endpoint Subnet in AZ-a for Interface VPC Endpoint ENIs
+    Value: !Ref EndpointSubnetA
+    Export:
+      Name: say2-6team-endpoints-subnet-a
+
+  EndpointsSubnetC:
+    Description: Endpoint Subnet in AZ-c for Interface VPC Endpoint ENIs
+    Value: !Ref EndpointSubnetC
+    Export:
+      Name: say2-6team-endpoints-subnet-c
+
+  EndpointSecurityGroupId:
+    Description: Security Group for Interface VPC Endpoints
+    Value: !Ref EndpointSecurityGroup
+    Export:
+      Name: say2-6team-endpoints-sg
+
+  CloudMapNamespaceId:
+    Description: Cloud Map Private DNS Namespace ID
+    Value: !Ref PrivateDnsNamespace
+    Export:
+      Name: say2-6team-cloud-map-namespace-id
+
+  # The following outputs are intentionally not exported.
+  # Add Export names only after the shared export contract is updated.
+  VpcFlowLogsBucketName:
+    Description: S3 bucket name for VPC Flow Logs
+    Value: !Ref VpcFlowLogsBucket
+
+  VpcFlowLogsBucketArn:
+    Description: S3 bucket ARN for VPC Flow Logs
+    Value: !GetAtt VpcFlowLogsBucket.Arn
+
+  S3GatewayEndpointId:
+    Description: S3 Gateway VPC Endpoint ID
+    Value: !Ref S3GatewayEndpoint
+
+  BedrockRuntimeEndpointId:
+    Description: Amazon Bedrock Runtime Interface VPC Endpoint ID
+    Value: !Ref BedrockRuntimeEndpoint
+
+  SecretsManagerEndpointId:
+    Description: AWS Secrets Manager Interface VPC Endpoint ID
+    Value: !Ref SecretsManagerEndpoint
+
+  KMSEndpointId:
+    Description: AWS KMS Interface VPC Endpoint ID
+    Value: !Ref KMSEndpoint
+
+  CloudWatchLogsEndpointId:
+    Description: CloudWatch Logs Interface VPC Endpoint ID
+    Value: !Ref CloudWatchLogsEndpoint
+
+  ECRApiEndpointId:
+    Description: Amazon ECR API Interface VPC Endpoint ID
+    Value: !Ref ECRApiEndpoint
+
+  ECRDockerEndpointId:
+    Description: Amazon ECR Docker Interface VPC Endpoint ID
+    Value: !Ref ECRDockerEndpoint
