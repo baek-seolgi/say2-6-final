@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import triage, orders, encounters, reports, ws, mimic, assets
+from app.api import triage, orders, encounters, reports, ws, mimic, assets, devices
 from app.config import APP_HOST, APP_PORT
 from app.db import client as db
 
@@ -130,6 +130,7 @@ app.include_router(encounters.router, prefix="/encounters", tags=["encounters"])
 app.include_router(reports.router, prefix="/reports", tags=["reports"])
 app.include_router(mimic.router, prefix="/mimic", tags=["mimic"])
 app.include_router(assets.router, prefix="/assets", tags=["assets"])
+app.include_router(devices.router, prefix="/devices", tags=["devices"])
 app.include_router(ws.router, tags=["websocket"])
 
 

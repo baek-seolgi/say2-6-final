@@ -174,3 +174,23 @@ CREATE INDEX IF NOT EXISTS idx_fsq_pending
 
 CREATE INDEX IF NOT EXISTS idx_fsq_encounter
     ON fhir_sync_queue(encounter_id);
+
+-- ================================================================
+-- 7. device_tokens: 모바일 푸시 알림 토큰 (FCM / APNs / Web Push)
+--    Flutter 앱이 시작 시 POST /devices/register 로 토큰 업서트.
+--    백엔드는 critical 이벤트 발생 시 활성 토큰들에 푸시 발송.
+-- ================================================================
+CREATE TABLE IF NOT EXISTS device_tokens (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      TEXT,                                  -- Cognito sub or physician id (nullable: 익명 단말 허용)
+    token        TEXT NOT NULL UNIQUE,                  -- FCM/APNs 푸시 토큰 (UPSERT 키)
+    platform     VARCHAR(20) NOT NULL,                  -- 'ios' | 'android' | 'web'
+    app_version  VARCHAR(20),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),    -- 같은 토큰 재등록 시 갱신
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dt_user     ON device_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_dt_platform ON device_tokens(platform);
+-- 활성 토큰만 빠르게 — 30일 내 last_seen
+CREATE INDEX IF NOT EXISTS idx_dt_active   ON device_tokens(last_seen_at DESC);
