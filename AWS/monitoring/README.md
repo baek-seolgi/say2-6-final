@@ -1,7 +1,34 @@
 # Monitoring — 모니터링 설계
 
 > **이 폴더가 하는 일**: DRAI 시스템의 AWS 모니터링 설정을 문서화한다.
-> 로그 수집, 이상 감지 알림, 보안 감사, 규정 준수 검사를 모두 포함한다.
+> Phase 1은 **CloudWatch + SNS(이메일)** 최소 구성. Phase 2에 CloudTrail / Config /
+> EventBridge 추가.
+
+---
+
+## 📌 Phase 1 (현재) — 최소 구성
+
+```
+Phase 1: CloudWatch + SNS(email) 만 배포
+├── cloudwatch.yaml  ← 로그 그룹 + 메트릭 + 대시보드
+├── alarms.yaml      ← 인프라 알람 + SNS 이메일
+└── logging.yaml     ← 앱 로그 표준 (문서)
+
+⏸️ Phase 2 보류:
+   ├── cloudtrail.yaml   (의료법 6년 audit — 운영 진입 시 활성화)
+   ├── aws-config.yaml   (인프라 규정 자동 검사)
+   └── eventbridge.yaml  (이벤트 기반 자동화)
+```
+
+## 🚨 알림 라우팅 — 두 갈래로 분리
+
+| 종류 | 예시 | 받는 사람 | 채널 | 처리 위치 |
+|---|---|---|---|---|
+| **인프라 알람** | Aurora CPU 80%, ECS 다운, ALB 5xx | DevOps / 운영팀 | 📧 SNS → 이메일 | `alarms.yaml` (CloudWatch) |
+| **임상 알람** | CRITICAL 환자 감지, STEMI 패턴 | 의사 (응급실) | 📱 FCM/APNs 푸시 + WebSocket | **백엔드 코드** (CloudWatch 거치지 않음) |
+
+→ 응급실 의사는 이메일 안 봄. 임상 알림은 푸시 1~3초 SLA가 필수라 CloudWatch 우회.
+→ 백엔드의 `fcm_dispatcher` (TODO)가 `device_tokens` 테이블의 의사 토큰들에 직접 발송.
 
 ---
 
@@ -68,43 +95,48 @@ monitoring/
 
 ---
 
-## 알림 흐름
+## 알림 흐름 — Phase 1
 
 ```
-이상 감지
-    │
-    ├── CloudWatch Alarm (메트릭 임계값 초과)
-    │       예: Aurora CPU 80% 초과 5분 지속
-    │
-    ├── EventBridge Rule (AWS 이벤트 패턴 매칭)
-    │       예: ECS 태스크 비정상 종료
-    │
-    └── Config Rule (보안 규정 위반)
-            예: RDS 퍼블릭 접근 활성화 감지
-                    │
-                    ▼
-              SNS Topic
-                    │
-                    ├── 이메일 → oncall-team@hospital.co.kr
-                    ├── Slack → #say2-6team-alerts 채널
-                    └── Lambda → 자동 교정 (일부 규칙)
+[인프라 알람]                              [임상 알람]
+─────────────────                          ──────────────────
+CloudWatch Alarm                           Backend 코드 (FastAPI)
+   메트릭 임계값 초과                          critical 환자 감지 / STEMI 패턴
+        │                                       │
+        ▼                                       │
+ SNS Topic                                      │
+   ├── critical-alerts                          │
+   └── warning-alerts                           │
+        │                                       │
+        ▼                                       ▼
+   📧 이메일                              📱 FCM/APNs 푸시
+   oncall-team@hospital                  device_tokens 테이블의
+   dev-team@hospital                     의사 폰 토큰들
+                                              +
+                                         🔔 WebSocket 푸시
+                                         의사 PC 브라우저 즉시
 ```
+
+→ 같은 "알람"이라도 **받는 사람·SLA에 따라 채널 완전 분리**.
 
 ---
 
-## 핵심 알람 목록
+## 핵심 알람 목록 (인프라 알람만 — 이메일 경유)
 
 | 알람 이름 | 조건 | 심각도 | 의미 |
 |----------|------|:------:|------|
 | Aurora-ACU-Max | ACU 3.6 이상 (max 4.0의 90%) | 🔴 CRITICAL | 스케일 한계 임박 |
 | Aurora-FreeableMemory-Low | 여유 메모리 256MB 미만 | 🔴 CRITICAL | 메모리 부족 |
 | Backend-Task-Unhealthy | ECS Running Task 0개 | 🔴 CRITICAL | 서비스 완전 다운 |
-| Critical-Risk-Detected | CRITICAL 위험도 환자 감지 | 🔴 CRITICAL | 임상 긴급 상황 |
-| Modal-Inference-Error-Spike | 추론 에러 5분간 3회 이상 | 🔴 CRITICAL | AI 서비스 장애 |
+| Modal-Inference-Error-Spike | 추론 에러 5분간 3회 이상 | 🔴 CRITICAL | AI 서비스 장애 (인프라) |
 | ALB-5xx-High | 5xx 에러 5분간 10회 초과 | 🔴 CRITICAL | 서버 에러 급증 |
 | Aurora-CPU-High | CPU 80% 초과 5분 지속 | ⚠️ WARNING | DB 과부하 |
 | High-Latency-Spike | 추론 5초 초과 5회/5분 | ⚠️ WARNING | 성능 저하 |
 | ALB-TargetResponseTime-High | 평균 응답 3초 초과 | ⚠️ WARNING | 응답 지연 |
+
+> ❗ **임상 알람** (`Critical-Risk-Detected`, STEMI 패턴 등) — 이 표에 없음.
+> CloudWatch 거치지 않고 백엔드 `fcm_dispatcher`가 의사 폰 FCM으로 직접 발송.
+> 이유: 응급실 의사가 이메일 안 봄. 1~3초 SLA 필수.
 
 ---
 
@@ -138,15 +170,26 @@ monitoring/
 
 ## 비용 예상
 
+### Phase 1 (현재 배포 범위)
+
 | 서비스 | 데모/PoC | 프로덕션 |
 |--------|:--------:|:--------:|
 | CloudWatch Logs | ~$3/월 | ~$20/월 |
-| CloudWatch Alarms (13개) | ~$1.3/월 | ~$1.3/월 |
+| CloudWatch Alarms (11개, 임상 1개 제외) | ~$1.1/월 | ~$1.1/월 |
 | CloudWatch Dashboard | $3/월 | $3/월 |
+| SNS | ~$0.5/월 | ~$1/월 |
+| **Phase 1 합계** | **~$8/월** | **~$25/월** |
+
+### Phase 2 추가 비용 (운영 진입 시)
+
+| 서비스 | 데모/PoC | 프로덕션 |
+|--------|:--------:|:--------:|
 | CloudTrail (관리 이벤트) | 무료 | 무료 |
 | CloudTrail (데이터 이벤트) | ~$1/월 | ~$5/월 |
 | AWS Config (15개 리소스) | ~$3/월 | ~$3/월 |
 | Config Rules (17개) | ~$2/월 | ~$2/월 |
 | EventBridge | 무료 | ~$1/월 |
-| SNS | ~$0.5/월 | ~$1/월 |
-| **합계** | **~$14/월** | **~$36/월** |
+| **Phase 2 추가** | **+$6/월** | **+$11/월** |
+
+→ Phase 1 + Phase 2 합산 시 ~$14/월(dev) / ~$36/월(prod)
+→ Phase 1만 배포해도 의료 시스템 모니터링 기본은 충족 (audit·compliance는 Phase 2에)

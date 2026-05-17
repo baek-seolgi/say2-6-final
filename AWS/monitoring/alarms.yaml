@@ -1,21 +1,31 @@
 # ============================================================
-# CloudWatch Alarms — 이상 감지 알림 설정
+# CloudWatch Alarms — 인프라 운영팀용 이상 감지 알림 (SNS → 이메일)
 #
-# 역할: 메트릭이 임계값을 초과하면 SNS를 통해 이메일/Slack으로 알림을 보낸다.
+# [범위 명확화]
+# 이 파일은 *인프라* 알람만 다룬다 (Aurora / ECS / ALB 헬스 + 모달 에러 카운트).
+# 의사·응급실 임상 알람 (CRITICAL 환자 감지, STEMI 패턴 등)은
+# CloudWatch가 아닌 *백엔드 코드가 직접 FCM/WebSocket으로 푸시* 한다.
+#
+# 이유: 응급실 의사는 이메일을 안 봄. 임상 알림은 앱 푸시 1~3초 지연이 필수.
 #
 # 알람 분류:
 #   1. Aurora DB 알람    — CPU, ACU, 연결 수, 메모리
 #   2. ECS 서비스 알람   — 중앙백엔드 CPU/메모리/태스크 수
-#   3. 임상 비즈니스 알람 — CRITICAL 환자, 추론 에러, 지연
+#   3. 모달 추론 인프라 — 에러 카운트, 지연 (* 임상 의미 아님, DevOps 모니터링)
 #   4. ALB 알람          — 5xx 에러, 응답 시간, Unhealthy 타겟
 #
-# 알림 채널:
-#   - say2-6team-critical-alerts : 즉시 대응 필요 → 이메일 + Slack
-#   - say2-6team-warning-alerts  : 주의 필요 → 이메일
+# 알림 채널 (모두 SNS → 이메일):
+#   - say2-6team-critical-alerts : 즉시 대응 필요 → CriticalAlertEmail
+#   - say2-6team-warning-alerts  : 주의 필요 → WarningAlertEmail
+#
+# 임상 알람은 어디에?
+#   백엔드 `fcm_dispatcher` (TODO 신규)가 device_tokens 테이블의 의사 토큰들에
+#   FCM/APNs로 직접 발송. CloudWatch 거치지 않음.
+#   참고: 의료법상 SLA 짧음 (CRITICAL 응답시간) — 푸시 1~3초 vs 이메일 30~60초
 #
 # 연관 파일:
-#   - cloudwatch.yaml  : 알람이 참조하는 메트릭 정의
-#   - eventbridge.yaml : AWS 이벤트 기반 알림 (이 파일과 상호 보완)
+#   - cloudwatch.yaml  : 알람이 참조하는 메트릭 정의 (인프라 메트릭만)
+#   - eventbridge.yaml : AWS 이벤트 기반 알림 (Phase 2 보류)
 # ============================================================
 
 # ── 공통 Parameters ────────────────────────────────────────
@@ -32,6 +42,16 @@ parameters:
     default: hkt
     allowed_values: [unassigned, wja, lji, hkt, yji]
 
+  # 알림 받을 이메일 — 배포 시 stack 파라미터로 override
+  CriticalAlertEmail:
+    type: String
+    default: oncall-team@hospital.co.kr
+    description: "CRITICAL 인프라 알람 수신 이메일 (운영팀)"
+  WarningAlertEmail:
+    type: String
+    default: dev-team@hospital.co.kr
+    description: "WARNING 인프라 알람 수신 이메일 (개발팀)"
+
 common_tags:
   - Key: Project
     Value: "!Ref ProjectName"
@@ -41,23 +61,21 @@ common_tags:
     Value: "!Ref Owner"
 
 
-
+# ── SNS Topics — 이메일만 (Slack 제거) ────────────────────
 sns_topics:
 
   - name: say2-6team-critical-alerts
-    description: "CRITICAL 알림 — 즉시 대응 필요"
+    description: "CRITICAL 인프라 알람 — 즉시 대응 필요 (이메일)"
     subscriptions:
       - protocol: email
-        endpoint: oncall-team@hospital.co.kr
-      - protocol: https
-        endpoint: https://hooks.slack.com/services/XXXXX/YYYYY/ZZZZZ
-        description: "Slack #say2-6team-alerts 채널"
+        endpoint: "!Ref CriticalAlertEmail"
 
   - name: say2-6team-warning-alerts
-    description: "WARNING 알림 — 주의 필요"
+    description: "WARNING 인프라 알람 — 주의 필요 (이메일)"
     subscriptions:
       - protocol: email
-        endpoint: dev-team@hospital.co.kr
+        endpoint: "!Ref WarningAlertEmail"
+
 
 # ──────────────────────────────────────────────────────────
 # 1. Aurora DB 알람
@@ -175,23 +193,15 @@ alarms:
       alarm: say2-6team-critical-alerts
 
   # ──────────────────────────────────────────────────────────
-  # 3. 임상 비즈니스 알람
+  # 3. 모달 추론 인프라 알람 (* 임상 의미 아님, DevOps용)
+  #
+  # 모달 서비스가 자주 죽으면 운영팀이 알아야 함. 단 의사에게는 알리지 않음
+  # (의사는 어차피 다른 모달 결과 + WebSocket으로 "분석 실패"는 즉시 알림).
+  # 임상 의사용 알림은 *backend의 FCM 디스패처*가 별도로 처리.
   # ──────────────────────────────────────────────────────────
 
-  - name: Critical-Risk-Detected
-    description: "CRITICAL 위험도 환자 감지 — 즉시 확인 필요"
-    namespace: DRAI/Clinical
-    metric: CriticalRiskCount
-    statistic: Sum
-    period: 60
-    threshold: 1
-    comparison: GreaterThanOrEqualToThreshold
-    evaluation_periods: 1
-    actions:
-      alarm: say2-6team-critical-alerts
-
   - name: Modal-Inference-Error-Spike
-    description: "모달 추론 에러 5분간 3회 이상"
+    description: "모달 추론 에러 5분간 3회 이상 — 운영팀 확인 필요 (인프라)"
     namespace: DRAI/Modal
     metric: InferenceErrorCount
     statistic: Sum
@@ -203,7 +213,7 @@ alarms:
       alarm: say2-6team-critical-alerts
 
   - name: High-Latency-Spike
-    description: "추론 지연(5초 초과) 5분간 5회 이상"
+    description: "추론 지연(5초 초과) 5분간 5회 이상 — 성능 저하"
     namespace: DRAI/Modal
     metric: HighLatencyCount
     statistic: Sum
@@ -213,6 +223,15 @@ alarms:
     evaluation_periods: 1
     actions:
       alarm: say2-6team-warning-alerts
+
+  # 🚫 임상 알람은 이 파일에서 제거 (이메일 알림 부적합)
+  #
+  # 옛 알람 (제거됨):
+  #   - Critical-Risk-Detected: CRITICAL 위험도 환자 감지
+  #     → 백엔드 fcm_dispatcher.py가 device_tokens.list_active_for_user()로
+  #       의사 폰에 FCM 직접 발송. WebSocket으로도 PC 브라우저 즉시 푸시.
+  #
+  # 이유: 응급실 의사는 이메일 안 봄. 임상 알림은 푸시 1~3초 SLA 필수.
 
   # ──────────────────────────────────────────────────────────
   # 4. ALB 알람
