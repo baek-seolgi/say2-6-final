@@ -25,6 +25,49 @@ from app.db import client as db
 router = APIRouter()
 
 
+@router.get("/list")
+async def list_encounters(status: str = "active", limit: int = 50):
+    """
+    환자 목록 (워크리스트) — 최근 encounter들을 DB에서 직접 조회.
+
+    [용도]
+    - 웹 프론트엔드 환자 목록 페이지
+    - 모바일 앱 worklist 화면
+
+    [파라미터]
+    - status: 'active' (기본) | 'closed' | 'all'
+    - limit: 최대 행 수 (기본 50)
+
+    [응답]
+    - report_status: 'preliminary'/'reviewed'/'signed' (소견서 있을 때만)
+    - ai_risk_level: 'routine'/'urgent'/'critical' (소견서 있을 때만)
+    """
+    rows = await db.fetch(
+        """
+        SELECT
+            e.encounter_id,
+            e.patient_id,
+            e.subject_id,
+            e.patient_name,
+            e.patient_age,
+            e.patient_gender,
+            e.chief_complaint,
+            e.started_at,
+            e.status,
+            dr.status         AS report_status,
+            dr.ai_risk_level  AS ai_risk_level
+        FROM encounters e
+        LEFT JOIN diagnostic_reports dr ON dr.encounter_id = e.encounter_id
+        WHERE ($1 = 'all' OR e.status = $1)
+        ORDER BY e.started_at DESC
+        LIMIT $2
+        """,
+        status,
+        int(limit),
+    )
+    return [dict(r) for r in rows]
+
+
 # ── 타임라인 단계 매핑 ───────────────────────────────────
 # event_type → (UI stage label, 정렬 우선순위)
 # 같은 stage_key의 가장 최신 event 1건을 단계 상태로 노출.
