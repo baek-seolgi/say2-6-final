@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/api/client.dart';
 import '../../shared/theme/app_theme.dart';
 
 /// 흉부 X-ray 검사결과지 — 백엔드 CXR modal 응답을 사람이 읽을 수 있게.
@@ -43,9 +44,9 @@ class CxrClinicalSheet extends StatelessWidget {
     final leftCpAngle = m['left_cp_angle'] as num?;
     final rightCpAngle = m['right_cp_angle'] as num?;
 
-    // backend API_BASE_URL는 dio config에 박혀있고 여기선 절대 URL 만들기 어려움.
-    // 일단 같은 origin 가정.
-    final imageUrl = subjectId != null ? '/assets/cxr/$subjectId' : null;
+    // backend가 S3에서 받아 스트리밍 — 웹의 /assets/cxr/{id}와 동일 경로.
+    // API base는 dio config의 apiBaseUrl 재사용 (운영 빌드 시 --dart-define으로 override).
+    final imageUrl = subjectId != null ? '$apiBaseUrl/assets/cxr/$subjectId' : null;
 
     return Container(
       color: Colors.white,
@@ -68,7 +69,7 @@ class CxrClinicalSheet extends StatelessWidget {
               color: Colors.black,
               child: imageUrl != null
                   ? Image.network(
-                      'http://localhost:8000$imageUrl',
+                      imageUrl,
                       fit: BoxFit.contain,
                       errorBuilder: (_, _, _) => const _ImagePlaceholder(),
                     )
