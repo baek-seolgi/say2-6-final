@@ -295,6 +295,121 @@ tables:
       - name: idx_me_type
         columns: [event_type]
 
+  # ──────────────────────────────────────────────────────────
+  # 5. fhir_sync_queue — HAPI 동기화 백로그 (Graceful Degradation)
+  #    HAPI 일시 다운 시 운영 DB INSERT는 정상 진행되고,
+  #    HAPI 동기화는 이 큐에 적재 → retry worker가 5분마다 백필.
+  # ──────────────────────────────────────────────────────────
+  - name: fhir_sync_queue
+    description: "HAPI 동기화 백로그 — HAPI 다운 시 graceful degradation"
+    columns:
+      - name: id
+        type: BIGSERIAL
+        primary_key: true
+        description: "자동 증가 PK"
+      - name: encounter_id
+        type: TEXT
+        nullable: false
+        description: "관련 방문 ID"
+      - name: patient_id
+        type: TEXT
+        nullable: true
+        description: "FHIR Patient ID (있으면)"
+      - name: resource_type
+        type: VARCHAR(40)
+        nullable: false
+        description: "FHIR 리소스 타입 (Patient/Encounter/ServiceRequest/Condition 등)"
+      - name: resource_id
+        type: TEXT
+        nullable: false
+        description: "우리가 발급한 UUID (HAPI PUT 대상 ID)"
+      - name: payload
+        type: JSONB
+        nullable: false
+        description: "HAPI에 보낼 FHIR JSON 원본"
+      - name: status
+        type: VARCHAR(20)
+        nullable: false
+        default: "'pending'"
+        description: "동기화 상태 — 'pending' | 'synced' | 'failed'"
+        note: "CHECK 제약 없음. retry worker가 값 검증"
+      - name: retry_count
+        type: INTEGER
+        nullable: false
+        default: "0"
+        description: "재시도 횟수 (5회 초과 시 failed로 마킹)"
+      - name: last_error
+        type: TEXT
+        nullable: true
+        description: "마지막 실패 에러 메시지"
+      - name: created_at
+        type: TIMESTAMPTZ
+        nullable: false
+        default: NOW()
+      - name: synced_at
+        type: TIMESTAMPTZ
+        nullable: true
+        description: "성공 동기화 시각"
+    indexes:
+      - name: idx_fsq_pending
+        type: PARTIAL
+        columns: [status, created_at]
+        where: "status = 'pending'"
+        description: "pending row만 빠르게 (worker가 매번 스캔)"
+      - name: idx_fsq_encounter
+        columns: [encounter_id]
+
+  # ──────────────────────────────────────────────────────────
+  # 6. device_tokens — 모바일 푸시 알림 토큰 (FCM / APNs / Web Push)
+  #    Flutter 앱이 시작 시 POST /devices/register 로 토큰 업서트.
+  #    백엔드는 critical 이벤트 발생 시 활성 토큰들에 푸시 발송.
+  # ──────────────────────────────────────────────────────────
+  - name: device_tokens
+    description: "모바일 푸시 알림 토큰 (Flutter 앱 시작 시 등록)"
+    columns:
+      - name: id
+        type: BIGSERIAL
+        primary_key: true
+      - name: user_id
+        type: TEXT
+        nullable: true
+        description: "Cognito sub 또는 physician id (익명 등록 허용)"
+      - name: token
+        type: TEXT
+        nullable: false
+        description: "FCM/APNs/Web Push 토큰"
+      - name: platform
+        type: VARCHAR(20)
+        nullable: false
+        description: "'ios' | 'android' | 'web'"
+        note: "CHECK 제약 없음. 애플리케이션 레벨에서 Literal 검증"
+      - name: app_version
+        type: VARCHAR(20)
+        nullable: true
+        description: "앱 버전 (예: 1.0.0)"
+      - name: last_seen_at
+        type: TIMESTAMPTZ
+        nullable: false
+        default: NOW()
+        description: "같은 토큰 재등록 시 갱신 (UPSERT)"
+      - name: created_at
+        type: TIMESTAMPTZ
+        nullable: false
+        default: NOW()
+    constraints:
+      - type: UNIQUE
+        columns: [token]
+        description: "같은 토큰은 한 row만 (UPSERT 키)"
+    indexes:
+      - name: idx_dt_user
+        columns: [user_id]
+      - name: idx_dt_platform
+        columns: [platform]
+      - name: idx_dt_active
+        columns: [last_seen_at]
+        order: DESC
+        description: "활성 토큰 빠르게 (30일 내 last_seen)"
+
 # ──────────────────────────────────────────────────────────
 # 트리거 & 함수
 # ──────────────────────────────────────────────────────────

@@ -52,7 +52,7 @@ aurora-serverless/
 
 ---
 
-## drai_ops 테이블 4개 — 한눈에 보기
+## drai_ops 테이블 6개 — 한눈에 보기
 
 | 테이블 | 역할 | 언제 생성되나 |
 |--------|------|-------------|
@@ -60,6 +60,8 @@ aurora-serverless/
 | `modal_results` | ECG/CXR/Lab AI 추론 원본 응답 | 모달 분석 완료 시 |
 | `diagnostic_reports` | AI 종합 소견 + 의사 서명 | 리포트 생성 시 |
 | `modal_events` | WebSocket 이벤트 로그 | 실시간 이벤트 발생 시 |
+| `fhir_sync_queue` | HAPI 동기화 백로그 (Graceful Degradation) | HAPI 다운 시 backfill 대비 |
+| `device_tokens` | 모바일 푸시 알림 토큰 (FCM/APNs/Web Push) | Flutter 앱 시작 시 |
 
 ### 테이블 관계도
 
@@ -67,9 +69,15 @@ aurora-serverless/
 encounters (방문 1건)
     │  encounter_id (TEXT = FHIR Encounter ID)
     │
-    ├──→ modal_results      (ECG/CXR/Lab 결과, 방문당 모달 1개씩)
-    ├──→ diagnostic_reports (소견서, 방문당 1개)
-    └──→ modal_events       (이벤트 로그, 여러 개)
+    ├──→ modal_results       (ECG/CXR/Lab 결과, 방문당 모달 1개씩)
+    ├──→ diagnostic_reports  (소견서, 방문당 1개)
+    └──→ modal_events        (이벤트 로그, 여러 개)
+
+fhir_sync_queue (FK 없음, encounter_id로만 추적)
+    └─ retry worker가 5분마다 pending row 백필
+
+device_tokens (FK 없음 — 환자가 아닌 의사 단말)
+    └─ user_id로 사용자 매칭, token UNIQUE
 ```
 
 ---

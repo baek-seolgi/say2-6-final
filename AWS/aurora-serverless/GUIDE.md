@@ -70,7 +70,7 @@ Aurora 클러스터 자체의 설정이다. 어떤 엔진을 쓸지, 어느 VPC�
 
 ### `schema.yaml` — 테이블 구조 정의
 
-`drai_ops` DB의 4개 테이블을 문서화한다.
+`drai_ops` DB의 6개 테이블을 문서화한다.
 실제 SQL은 `migrations.yaml`에 있고, 이 파일은 사람이 읽기 쉬운 형태로 정리한 것이다.
 
 > ⚠️ **주의**: `schema.yaml`에 표기된 허용 값 목록(예: `'active' | 'closed'`)은
@@ -155,6 +155,8 @@ Layer 3: 암호화
 | 004 | modal_events 테이블 생성 |
 | 005 | `_bump_updated_at()` 트리거 |
 | 006 | `_fill_subject_id()` 트리거 (3개 테이블 적용) |
+| 007 | fhir_sync_queue 테이블 생성 (HAPI Graceful Degradation 큐) |
+| 008 | device_tokens 테이블 생성 (모바일 푸시 알림) |
 
 > 이 SQL은 `final/central/backend/app/db/schema.sql`과 **100% 동일**하다.
 > YAML 형식은 버전 관리와 문서화를 위한 래퍼다.
