@@ -137,26 +137,28 @@ export function CXRView({
 
   return (
     <>
+      {/* 1) 원본 흉부 X-ray — HTML <img>로 깔아 안정적으로 렌더 */}
+      <img
+        src={cxrSrc}
+        alt={`CXR ${subjectId}`}
+        className="absolute inset-0 w-full h-full object-contain bg-black"
+        loading="lazy"
+      />
+      {/* 2) UNet 세그멘테이션 마스크 — 같은 viewBox SVG로 오버레이 */}
+      {showSeg && maskSrc && (
+        <img
+          src={maskSrc}
+          alt="segmentation"
+          className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+          style={{ mixBlendMode: "screen", opacity: 0.45 }}
+        />
+      )}
+      {/* 3) 측정선·라벨 — SVG로 좌표 기반 오버레이 */}
       <svg
         viewBox={`0 0 ${W} ${H}`}
         preserveAspectRatio="xMidYMid meet"
-        className="absolute inset-0 w-full h-full bg-black"
+        className="absolute inset-0 w-full h-full pointer-events-none"
       >
-        {/* 1) 원본 흉부 X-ray */}
-        <image href={cxrSrc} x={0} y={0} width={W} height={H} preserveAspectRatio="xMidYMid meet" />
-
-        {/* 2) UNet 세그멘테이션 마스크 (반투명, screen 합성) */}
-        {showSeg && maskSrc && (
-          <image
-            href={maskSrc}
-            x={0}
-            y={0}
-            width={W}
-            height={H}
-            preserveAspectRatio="xMidYMid meet"
-            style={{ mixBlendMode: "screen", opacity: 0.45 }}
-          />
-        )}
 
         {showMeasure && (
           <>
