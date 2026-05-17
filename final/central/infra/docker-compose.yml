@@ -55,10 +55,10 @@ services:
       - FHIR_BASE_URL=http://hapi-fhir:8080/fhir
       - OPS_DB_URL=postgresql://admin:secret@postgres:5432/central_db
       - AWS_REGION=ap-northeast-2
-      # 모달 서비스 URL — 모두 우리 EC2 52.79.251.216 (t3.large, 사이드카 통합)
+      # 모달 서비스 URL — EC2 52.79.251.216 (t3.large) 한 인스턴스에 3개 모달 분리 호스팅
+      # ECG/CXR/LAB 각자 별도 서비스. LAB은 룰 기반 실시간(/predict) + 6h 악화 예측(/predict_6h) 둘 다 포함.
       - LAB_SERVICE_URL=http://52.79.251.216:8000
-      # 6시간 후 악화 예측 — 로컬 lab-svc-local 컨테이너 (ECS 시뮬레이션, infra_default 네트워크)
-      - BLOOD_PROGNOSIS_URL=http://lab-svc-local:8000
+      - BLOOD_PROGNOSIS_URL=http://52.79.251.216:8000   # 같은 LAB 모달의 /predict_6h endpoint
       - CXR_SERVICE_URL=http://52.79.251.216:8002
       - ECG_SERVICE_URL=http://52.79.251.216:8003
     volumes:
