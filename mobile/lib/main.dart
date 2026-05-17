@@ -37,40 +37,41 @@ class _PhoneFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     final screen = MediaQuery.of(context).size;
 
-    // 좁은 창(태블릿·실제 폰) — 전체 화면 그대로
-    if (screen.width < _phoneWidth + 60 || screen.height < _phoneHeight + 60) {
-      return child;
-    }
+    // 실제 폰·아주 좁은 창(<480) — 전체 화면 그대로
+    if (screen.width < 480) return child;
 
-    // 넓은 창 — 회색 backdrop 위에 폰 프레임
-    return ColoredBox(
-      color: AppColors.slate200,
-      child: Center(
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(36),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withAlpha(60),
-                blurRadius: 24,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(36),
-            child: SizedBox(
-              width: _phoneWidth,
-              height: _phoneHeight,
-              // 자식 위젯이 "390 x 844 폰 화면"으로 인식하도록 MediaQuery override
-              child: MediaQuery(
-                data: MediaQuery.of(context).copyWith(
-                  size: const Size(_phoneWidth, _phoneHeight),
-                  padding: EdgeInsets.zero,
-                  viewPadding: EdgeInsets.zero,
-                  viewInsets: EdgeInsets.zero,
+    // 데스크탑 — 회색 backdrop 위에 폰 프레임 (높이는 무관, 짧으면 페이지 스크롤)
+    return Scaffold(
+      backgroundColor: AppColors.slate200,
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Center(
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(36),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withAlpha(60),
+                  blurRadius: 24,
+                  offset: const Offset(0, 8),
                 ),
-                child: child,
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(36),
+              child: SizedBox(
+                width: _phoneWidth,
+                height: _phoneHeight,
+                // 자식 위젯이 "390 x 844 폰 화면"으로 인식하도록 MediaQuery override
+                child: MediaQuery(
+                  data: MediaQuery.of(context).copyWith(
+                    size: const Size(_phoneWidth, _phoneHeight),
+                    padding: EdgeInsets.zero,
+                    viewPadding: EdgeInsets.zero,
+                    viewInsets: EdgeInsets.zero,
+                  ),
+                  child: child,
+                ),
               ),
             ),
           ),
