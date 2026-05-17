@@ -326,13 +326,28 @@ async def _build_modal_payload(
             "image_s3_uri": cxr_s3,   # 참고용 (CXR 서비스는 안 쓰지만 로그/디버그용)
         }
     elif modality == "ECG":
-        # ECG 서비스가 자체적으로 S3에서 WFDB 로드. record_path만 넘겨주면 됨.
+        # CXR과 동일 패턴: 중앙 백엔드가 .hea + .dat 를 S3에서 받아 base64로 전송.
+        # 모달 서비스는 S3 접근·자격증명 불필요. (옛 record_path 방식은 하위호환으로 함께 전송)
         record_path = mimic_info.get("ecg_record_path") or (docref_info or {}).get("url", "")
+        hea_b64 = ""
+        dat_b64 = ""
+        if record_path and record_path.startswith("s3://"):
+            try:
+                from app.clients.s3_downloader import download_as_base64
+                hea_b64 = download_as_base64(record_path + ".hea")
+                dat_b64 = download_as_base64(record_path + ".dat")
+                logger.info(
+                    f"[ECG] S3 WFDB 다운로드 완료 ({record_path}, hea={len(hea_b64)}, dat={len(dat_b64)} chars b64)"
+                )
+            except Exception as e:
+                logger.warning(f"[ECG] S3 WFDB 다운로드 실패 ({record_path}): {e}")
         if not record_path:
-            # MIMIC 식별자 미제공 시 fallback (주로 mock 응답 유발)
+            # MIMIC 식별자 미제공 시 fallback (모달이 mock 폴백)
             record_path = f"mimic/ecg/{patient_id}"
         data = {
-            "record_path": record_path,
+            "hea_base64": hea_b64,
+            "dat_base64": dat_b64,
+            "record_path": record_path,   # 하위호환 + 디버그 식별자
             "leads": 12,
         }
     elif modality == "LAB":

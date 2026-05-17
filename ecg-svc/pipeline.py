@@ -60,6 +60,8 @@ class ECGPipeline:
 
             ecg_signal, demographics, vitals, raw_signal = self.preprocessor.run(
                 record_path=req.data.record_path,
+                hea_base64=req.data.hea_base64,
+                dat_base64=req.data.dat_base64,
                 age=age,
                 sex=sex,
             )

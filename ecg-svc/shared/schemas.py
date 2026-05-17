@@ -14,7 +14,14 @@ class PatientInfo(BaseModel):
 
 
 class ECGData(BaseModel):
-    record_path: str                     # WFDB 레코드 경로 (확장자 없이, S3 URI 또는 로컬)
+    # 새 권장 방식 — 백엔드가 .hea + .dat 파일을 base64로 전달.
+    # CXR/LAB과 동일 패턴: 모달 서비스는 S3 접근 불필요, IAM 자격증명 부담 0.
+    hea_base64: Optional[str] = None     # WFDB .hea 헤더 파일 base64
+    dat_base64: Optional[str] = None     # WFDB .dat 신호 파일 base64
+
+    # 옛 방식 (하위호환) — record_path만 받으면 모달이 자체 S3 다운로드.
+    # base64 필드가 있으면 우선 사용.
+    record_path: Optional[str] = None    # WFDB 레코드 경로 (확장자 없이, S3 URI 또는 로컬)
     leads: int = 12
 
 

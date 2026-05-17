@@ -65,9 +65,11 @@ class ECGPreprocessor:
     # ------------------------------------------------------------------
     def run(
         self,
-        record_path: str,   # WFDB 레코드 경로 (확장자 없이)
         age: float,
         sex: str,
+        record_path: str | None = None,    # 옛 방식: S3 URI 또는 로컬 경로 (확장자 없이)
+        hea_base64: str | None = None,     # 새 방식: .hea 파일 base64
+        dat_base64: str | None = None,     # 새 방식: .dat 파일 base64
     ) -> tuple[np.ndarray, np.ndarray, dict, np.ndarray]:
         """
         Returns:
@@ -75,8 +77,16 @@ class ECGPreprocessor:
             demographics: (1, 2)        float32
             vitals:       dict  — HR, bradycardia, tachycardia, irregular_rhythm
             raw_signal:   (1000, 12) float32  — 정규화 전 원본 (프론트엔드 시각화용)
+
+        우선순위: base64 둘 다 주어지면 그걸 사용 (백엔드 위탁 다운로드 패턴, CXR과 동일).
+        없으면 record_path로 fallback (모달이 S3 직접 다운로드 — 옛 동작 호환).
         """
-        sig, fs, sig_names = self._load_wfdb(record_path)   # (T, 12), Hz, [채널명...]
+        if hea_base64 and dat_base64:
+            sig, fs, sig_names = self._load_wfdb_base64(hea_base64, dat_base64)
+        elif record_path:
+            sig, fs, sig_names = self._load_wfdb(record_path)
+        else:
+            raise ValueError("ECG 입력 누락: hea_base64+dat_base64 또는 record_path 중 하나 필요")
         sig = self._clean(sig)                               # NaN 보간 + ±3mV 클리핑
         sig = self._resample(sig, fs)                        # → (1000, 12)
         sig = self._align_channels(sig, sig_names)           # 채널 고정 순서
@@ -102,6 +112,36 @@ class ECGPreprocessor:
             return self._load_wfdb_s3(record_path)
         # 로컬
         sig, fields = wfdb.rdsamp(record_path)
+        return sig.astype(np.float32), fields['fs'], fields['sig_name']
+
+    def _load_wfdb_base64(
+        self, hea_b64: str, dat_b64: str,
+    ) -> tuple[np.ndarray, int, list[str]]:
+        """
+        백엔드가 .hea + .dat 를 base64로 전달한 경우 — 임시 파일에 쓰고 wfdb.rdsamp.
+        S3 접근 불필요 → 모달 서비스에 IAM 자격증명 불필요.
+
+        주의: .hea 파일 첫 줄에 record name이 박혀있고, 두 번째 줄부터 .dat 파일을
+        "{name}.dat" 식으로 참조함. 그래서 임시 파일도 .hea가 명시한 이름 그대로 저장.
+        """
+        import base64
+        hea_bytes = base64.b64decode(hea_b64)
+        dat_bytes = base64.b64decode(dat_b64)
+
+        # .hea 첫 줄 첫 토큰이 record name
+        first_line = hea_bytes.decode("utf-8", errors="replace").splitlines()[0]
+        record_name_in_hea = first_line.split()[0]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hea_path = os.path.join(tmpdir, record_name_in_hea + ".hea")
+            dat_path = os.path.join(tmpdir, record_name_in_hea + ".dat")
+            with open(hea_path, "wb") as f:
+                f.write(hea_bytes)
+            with open(dat_path, "wb") as f:
+                f.write(dat_bytes)
+
+            record_path = os.path.join(tmpdir, record_name_in_hea)
+            sig, fields = wfdb.rdsamp(record_path)
         return sig.astype(np.float32), fields['fs'], fields['sig_name']
 
     def _load_wfdb_s3(self, s3_record: str) -> tuple[np.ndarray, int, list[str]]:
