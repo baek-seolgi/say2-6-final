@@ -2,7 +2,11 @@ import { Bell, ChevronDown, Activity, LogOut } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/cn";
 import { useAuth } from "../../lib/v2/auth";
-import { getAllPatients, isLivePatient } from "../../lib/v2/demoStore";
+import {
+  getAllPatients,
+  isLivePatient,
+  getLocalReportStatus,
+} from "../../lib/v2/demoStore";
 import type { ReactNode } from "react";
 
 interface AppShellProps {
@@ -79,7 +83,12 @@ function Header({ notifications }: { notifications: number }) {
             active={isAnalysis}
             onClick={() => nav(pickAnalysisTarget())}
           />
-          <NavLink to="/demo/reports"   label="AI 종합소견 생성" active={isReports || isReportEdit} />
+          <NavButton
+            label="AI 종합소견 생성"
+            active={isReportEdit}
+            onClick={() => nav(pickReportTarget())}
+          />
+          <NavLink to="/demo/reports"   label="종합소견서 목록" active={isReports} />
           <NavLink to="/demo/dashboard" label="검진현황" active={isDashboard} />
         </nav>
 
@@ -176,4 +185,26 @@ function pickAnalysisTarget(): string {
   if (!p) return "/demo/worklist";
   const q = isLivePatient(p.id) ? `?encounter_id=${p.id}` : "";
   return `/demo/patient/${p.id}${q}`;
+}
+
+// AI 종합소견 생성 탭 — 분석 완료됐고 아직 서명 전인 환자의 소견서 편집기로.
+// 우선순위: 검토 중 > 작성 가능(분석 완료) > KTAS 낮은 순. 없으면 목록으로 폴백.
+function pickReportTarget(): string {
+  const all = getAllPatients();
+  const candidates = all
+    .filter((p) => {
+      if (p.aiStatus !== "done") return false;
+      const local = getLocalReportStatus(p.id);
+      return local !== "signed" && local !== "amended";
+    })
+    .sort((a, b) => {
+      const aw = getLocalReportStatus(a.id) === "reviewed" ? 0 : 1;
+      const bw = getLocalReportStatus(b.id) === "reviewed" ? 0 : 1;
+      if (aw !== bw) return aw - bw;
+      return a.ktas - b.ktas;
+    });
+  const p = candidates[0];
+  if (!p) return "/demo/reports";
+  const q = isLivePatient(p.id) ? `?encounter_id=${p.id}` : "";
+  return `/demo/patient/${p.id}/report${q}`;
 }

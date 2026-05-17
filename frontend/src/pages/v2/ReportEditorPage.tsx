@@ -472,10 +472,11 @@ function SheetButton({ onClick, live }: { onClick: () => void; live?: boolean })
   return (
     <button
       onClick={onClick}
-      className="inline-flex items-center gap-1 px-2 py-0.5 border border-vuno-cyan/50 text-vuno-cyanDim hover:bg-vuno-cyan/10 text-[10px] font-bold transition-colors"
+      className="inline-flex items-center gap-1 px-2 py-0.5 border border-vuno-cyan/50 text-vuno-cyanDim hover:bg-vuno-cyan/10 text-[10px] font-bold transition-colors whitespace-nowrap flex-shrink-0"
     >
-      <FileText className="h-3 w-3" /> 검사결과지
-      {live && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" title="백엔드 실시간 연동" />}
+      <FileText className="h-3 w-3 flex-shrink-0" />
+      <span>검사결과지</span>
+      {live && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 flex-shrink-0" title="백엔드 실시간 연동" />}
     </button>
   );
 }
