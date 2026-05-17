@@ -18,6 +18,13 @@ export default defineConfig({
       "/orders": "http://localhost:8000",
       "/reports": "http://localhost:8000",
       "/assets": "http://localhost:8000",
+      "/devices": "http://localhost:8000",
+      // WebSocket — backend ws.py /ws/encounter/{id} 실시간 푸시
+      "/ws": {
+        target: "ws://localhost:8000",
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
 });

@@ -16,6 +16,7 @@ import {
 import { CXRView, ECGView, LabView } from "../../components/modal-views/ModalViews";
 import { CxrPacsViewer } from "../../components/modal-views/CxrPacsViewer";
 import { PatientInfoSidebar, fmtTime } from "../../components/v2/PatientInfoSidebar";
+import { subscribeEncounter } from "../../lib/v2/ws";
 import { cn } from "../../lib/cn";
 
 type TabKey = "summary" | "ecg" | "cxr" | "lab";
@@ -52,9 +53,16 @@ export default function PatientDetailPage() {
   useEffect(() => {
     if (!encounterId) return;
     poll();
-    // 폴링 주기 2초 — 모달 완료 즉시 UI 반영
-    pollRef.current = setInterval(poll, 2000);
+    // WebSocket 구독 — backend가 broadcast() 호출하면 즉시 받음 (push)
+    // /ws/encounter/{id}에서 modal_completed / ready_for_report / report_signed 등.
+    const handle = subscribeEncounter(encounterId, () => {
+      // 어떤 이벤트든 도착하면 최신 상태 즉시 가져오기
+      poll();
+    });
+    // 폴링은 fallback — WS 끊겼을 때 대비. 10s로 늦춤 (원래 2s).
+    pollRef.current = setInterval(poll, 10_000);
     return () => {
+      handle.close();
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     };
   }, [encounterId, poll]);
