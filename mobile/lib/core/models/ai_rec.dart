@@ -65,14 +65,58 @@ class AIRec {
 /// 모달 검사 요약 — backend /modal-results의 각 모달 항목.
 class ModalSummary {
   final String modality; // ECG / CXR / LAB
-  final String status;   // 'ok' / 'error' / ...
+  final String status;   // 'ok' / 'success' / 'error' / ...
   final String? summary; // 사람이 읽는 한 줄 요약
+  // 검사결과지에서 활용할 raw 응답 (waveform, measurements, lab_summary 등)
+  final Map<String, dynamic>? raw;
 
   const ModalSummary({
     required this.modality,
     required this.status,
     this.summary,
+    this.raw,
   });
 
-  bool get isDone => status == 'ok';
+  bool get isDone => status == 'ok' || status == 'success';
+
+  // ECG raw 데이터 헬퍼
+  List<List<double>>? get ecgWaveform {
+    final w = raw?['waveform'];
+    if (w is! List) return null;
+    return w
+        .map((row) => (row as List).map((v) => (v as num).toDouble()).toList())
+        .toList();
+  }
+
+  Map<String, dynamic>? get ecgVitals =>
+      (raw?['ecg_vitals'] as Map?)?.cast<String, dynamic>();
+
+  // 공통 findings
+  List<Map<String, dynamic>> get findings {
+    final f = raw?['findings'];
+    if (f is! List) return const [];
+    return f.cast<Map<String, dynamic>>();
+  }
+
+  String? get riskLevel => raw?['risk_level'] as String?;
+
+  // CXR 전용
+  Map<String, dynamic>? get cxrMeasurements =>
+      (raw?['measurements'] as Map?)?.cast<String, dynamic>();
+  String? get cxrImpression => raw?['impression'] as String?;
+  List<String> get cxrFindingsText {
+    final ft = raw?['findings_text'];
+    if (ft is List) return ft.cast<String>();
+    return const [];
+  }
+
+  // LAB 전용
+  List<Map<String, dynamic>> get labSummary {
+    final l = raw?['lab_summary'];
+    if (l is! List) return const [];
+    return l.cast<Map<String, dynamic>>();
+  }
+
+  Map<String, dynamic>? get prognosis6h =>
+      (raw?['prognosis_6h'] as Map?)?.cast<String, dynamic>();
 }

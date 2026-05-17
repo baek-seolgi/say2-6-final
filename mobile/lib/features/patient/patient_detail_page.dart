@@ -5,7 +5,9 @@ import 'package:go_router/go_router.dart';
 import '../../core/api/patient_api.dart';
 import '../../core/models/ai_rec.dart';
 import '../../shared/theme/app_theme.dart';
+import 'cxr_clinical_sheet.dart';
 import 'ecg_clinical_sheet.dart';
+import 'lab_clinical_sheet.dart';
 
 /// frontend/src/pages/v2/PatientDetailPage.tsx의 AIRecPanel(가운데 컬럼)을 모바일에 맞춤.
 /// 헤더(AI 검사 권고) + 진행 요약 + 1·2·3차 권고 그룹 + 의사 직접 오더 그룹
@@ -102,13 +104,17 @@ class PatientDetailPage extends ConsumerWidget {
                             rank: r,
                             recs: byRank[r]!,
                             encounterId: patientId,
+                            modalResults: data.modalResults,
                           ),
                           const SizedBox(height: 10),
                         ],
                         // 의사 직접 오더 그룹
                         if (manualRecs.isNotEmpty) ...[
                           _ManualOrderGroup(
-                              recs: manualRecs, encounterId: patientId),
+                            recs: manualRecs,
+                            encounterId: patientId,
+                            modalResults: data.modalResults,
+                          ),
                           const SizedBox(height: 10),
                         ],
                         // 모든 권고 완료 안내
@@ -277,10 +283,13 @@ class _RankGroup extends StatelessWidget {
   final int rank;
   final List<AIRec> recs;
   final String encounterId;
-  const _RankGroup(
-      {required this.rank,
-      required this.recs,
-      required this.encounterId});
+  final Map<String, ModalSummary> modalResults;
+  const _RankGroup({
+    required this.rank,
+    required this.recs,
+    required this.encounterId,
+    required this.modalResults,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -342,7 +351,11 @@ class _RankGroup extends StatelessWidget {
               children: [
                 for (int i = 0; i < recs.length; i++) ...[
                   if (i > 0) const SizedBox(height: 8),
-                  _RecCard(rec: recs[i], encounterId: encounterId),
+                  _RecCard(
+                    rec: recs[i],
+                    encounterId: encounterId,
+                    modal: modalResults[recs[i].modality],
+                  ),
                 ],
               ],
             ),
@@ -357,8 +370,12 @@ class _RankGroup extends StatelessWidget {
 class _ManualOrderGroup extends StatelessWidget {
   final List<AIRec> recs;
   final String encounterId;
-  const _ManualOrderGroup(
-      {required this.recs, required this.encounterId});
+  final Map<String, ModalSummary> modalResults;
+  const _ManualOrderGroup({
+    required this.recs,
+    required this.encounterId,
+    required this.modalResults,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -415,9 +432,11 @@ class _ManualOrderGroup extends StatelessWidget {
                 for (int i = 0; i < recs.length; i++) ...[
                   if (i > 0) const SizedBox(height: 8),
                   _RecCard(
-                      rec: recs[i],
-                      encounterId: encounterId,
-                      manual: true),
+                    rec: recs[i],
+                    encounterId: encounterId,
+                    manual: true,
+                    modal: modalResults[recs[i].modality],
+                  ),
                 ],
               ],
             ),
@@ -433,10 +452,12 @@ class _RecCard extends ConsumerStatefulWidget {
   final AIRec rec;
   final String encounterId;
   final bool manual;
+  final ModalSummary? modal; // 해당 모달의 raw 결과 (검사결과지 버튼이 사용)
   const _RecCard({
     required this.rec,
     required this.encounterId,
     this.manual = false,
+    this.modal,
   });
 
   @override
@@ -470,29 +491,49 @@ class _RecCardState extends ConsumerState<_RecCard> {
     }
   }
 
-  // "검사결과지" 버튼 핸들러 — 현재는 ECG만 지원, CXR/LAB은 placeholder dialog
+  // "검사결과지" 버튼 핸들러 — modality별로 실 데이터 전달.
+  // patient_name/age 등은 encounter에서 와야 하는데 RecCard에 없으니 placeholder.
+  // TODO: PatientDetailPage 차원에서 환자 정보를 RecCard까지 흘려주기.
   void _openResultSheet(BuildContext context, String modality) {
+    final modal = widget.modal;
+    final patientId = widget.encounterId.substring(0, 8);
+
     if (modality == 'ECG') {
-      // TODO: 실제 환자 정보 + 측정값 전달. 일단 placeholder.
       showEcgClinicalSheet(
         context,
         patientName: '환자',
-        age: 30,
+        age: 0,
         sex: 'M',
-        patientId: widget.encounterId.substring(0, 8),
+        patientId: patientId,
+        waveform: modal?.ecgWaveform,
+        ecgVitals: modal?.ecgVitals,
+        findings: modal?.findings ?? const [],
       );
-    } else {
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: Text('$modality 검사결과지'),
-          content: const Text('이 모달은 검사결과지 미구현 — 추후 추가 예정'),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('닫기')),
-          ],
-        ),
+    } else if (modality == 'CXR') {
+      showCxrClinicalSheet(
+        context,
+        patientName: '환자',
+        age: 0,
+        sex: 'M',
+        patientId: patientId,
+        subjectId: null, // TODO: encounter.subject_id
+        measurements: modal?.cxrMeasurements,
+        findingsText: modal?.cxrFindingsText ?? const [],
+        impression: modal?.cxrImpression,
+        summary: modal?.summary,
+        riskLevel: modal?.riskLevel,
+      );
+    } else if (modality == 'LAB') {
+      showLabClinicalSheet(
+        context,
+        patientName: '환자',
+        age: 0,
+        sex: 'M',
+        patientId: patientId,
+        labSummary: modal?.labSummary ?? const [],
+        prognosis6h: modal?.prognosis6h,
+        summary: modal?.summary,
+        riskLevel: modal?.riskLevel,
       );
     }
   }

@@ -31,7 +31,7 @@ final patientDetailProvider = FutureProvider.autoDispose
       .toList()
     ..sort((a, b) => a.authoredOn.compareTo(b.authoredOn));
 
-  // 2) modal-results 파싱
+  // 2) modal-results 파싱 — raw JSON도 함께 보존 (검사결과지에서 활용)
   final mrData = (results[1].data as Map<String, dynamic>);
   final mrResults = (mrData['results'] as Map?) ?? const {};
   final modalMap = <String, ModalSummary>{};
@@ -42,6 +42,7 @@ final patientDetailProvider = FutureProvider.autoDispose
       modality: m,
       status: entry['status'] as String? ?? 'unknown',
       summary: entry['summary'] as String?,
+      raw: Map<String, dynamic>.from(entry),
     );
   }
 

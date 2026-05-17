@@ -20,6 +20,36 @@ interface EcgClinicalSheetProps {
   qrsAxis?: number;
   // 판정 코드 (Minnesota / 기계 해석)
   interpretation?: { code: string; text: string }[];
+  // 실 ECG 데이터 (주어지면 합성 패턴 대신 그림)
+  // MIMIC 표준: T(=1000) × 12 channels, channel 순서: I, II, V1~V6, III, aVR, aVL, aVF
+  waveform?: number[][];
+}
+
+// MIMIC 12-lead 채널 인덱스 (PTB-XL 표준)
+const LEAD_CHANNEL: Record<string, number> = {
+  I: 0, II: 1, V1: 2, V2: 3, V3: 4, V4: 5, V5: 6, V6: 7,
+  III: 8, aVR: 9, aVL: 10, aVF: 11,
+};
+
+// 실 waveform을 SVG path로 — 한 채널 1000 샘플 → 240 width, 80 height
+function realLeadPath(
+  samples: number[][],
+  channel: number,
+  width: number,
+  baselineY: number,
+  amplitude: number,
+): string {
+  if (samples.length === 0) return "";
+  const n = samples.length;
+  const dx = width / (n - 1);
+  const parts: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const v = samples[i]?.[channel] ?? 0;
+    const x = i * dx;
+    const y = baselineY - v * amplitude * 0.5;
+    parts.push(`${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`);
+  }
+  return parts.join(" ");
 }
 
 // 정상 NSR 한 박동 path — width=60 (1 박동/1초 가정, 25mm/s)
@@ -83,6 +113,7 @@ export function EcgClinicalSheet({
   pAxis = 52,
   qrsAxis = 38,
   interpretation,
+  waveform,
 }: EcgClinicalSheetProps) {
   const sexLabel = sex === "M" ? "남" : sex === "F" ? "여" : sex;
   const interp =
@@ -193,7 +224,8 @@ export function EcgClinicalSheet({
           {LEAD_GRID.map(({ row, col, name }) => {
             const x0 = col * 180 + 4;
             const y0 = row * 90 + 4;
-            // 각 셀 안에 3박동
+            const channel = LEAD_CHANNEL[name];
+            const hasReal = waveform && waveform.length > 0;
             return (
               <g key={name} transform={`translate(${x0}, ${y0})`}>
                 <text x="2" y="14" fill="#475569" fontSize="11" fontWeight="bold">
@@ -206,14 +238,23 @@ export function EcgClinicalSheet({
                   strokeWidth="0.6"
                   fill="none"
                 />
-                {/* 박동 패턴 (위에 calibration 한 박스 표시 + 그 뒤로 정상 sinus) */}
-                <path
-                  transform="translate(14, 4) scale(1.6, 1)"
-                  d={multiBeats(1, 42, 3)}
-                  stroke="#0f172a"
-                  strokeWidth="0.7"
-                  fill="none"
-                />
+                {hasReal ? (
+                  <path
+                    transform="translate(14, 0)"
+                    d={realLeadPath(waveform!, channel, 158, 46, 18)}
+                    stroke="#0f172a"
+                    strokeWidth="0.7"
+                    fill="none"
+                  />
+                ) : (
+                  <path
+                    transform="translate(14, 4) scale(1.6, 1)"
+                    d={multiBeats(1, 42, 3)}
+                    stroke="#0f172a"
+                    strokeWidth="0.7"
+                    fill="none"
+                  />
+                )}
               </g>
             );
           })}
@@ -248,14 +289,24 @@ export function EcgClinicalSheet({
             strokeWidth="0.6"
             fill="none"
           />
-          {/* 리듬 — 박동 12개 */}
-          <path
-            transform="translate(20, 20) scale(2.4, 1)"
-            d={rhythmStripPath(1, 38, 12)}
-            stroke="#0f172a"
-            strokeWidth="0.7"
-            fill="none"
-          />
+          {/* 리듬 — 실 Lead II waveform 또는 합성 */}
+          {waveform && waveform.length > 0 ? (
+            <path
+              transform="translate(20, 0)"
+              d={realLeadPath(waveform, LEAD_CHANNEL.II, 680, 60, 18)}
+              stroke="#0f172a"
+              strokeWidth="0.7"
+              fill="none"
+            />
+          ) : (
+            <path
+              transform="translate(20, 20) scale(2.4, 1)"
+              d={rhythmStripPath(1, 38, 12)}
+              stroke="#0f172a"
+              strokeWidth="0.7"
+              fill="none"
+            />
+          )}
         </svg>
       </div>
 

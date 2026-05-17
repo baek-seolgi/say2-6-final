@@ -5,7 +5,8 @@ import '../../shared/theme/app_theme.dart';
 /// frontend/src/components/v2/EcgClinicalSheet.tsx의 Flutter 포트.
 /// 핑크 그리드 ECG 종이 + 12-lead + Lead II 리듬 스트립.
 ///
-/// 모바일에선 RecCard "검사결과지" 버튼 → 풀스크린 모달로 표시.
+/// [waveform]이 주어지면 (1000 × 12 형식, MIMIC 표준) 실 파형을 그림.
+/// 안 주어지면 합성 normal sinus 패턴을 그림 (정적 데모 모드).
 class EcgClinicalSheet extends StatelessWidget {
   final String patientName;
   final int age;
@@ -22,6 +23,10 @@ class EcgClinicalSheet extends StatelessWidget {
   final int qrsAxis;
   // 판정
   final List<({String code, String text})> interpretation;
+  // 실 ECG 데이터 (있을 때만)
+  final List<List<double>>? waveform; // T x 12
+  final bool? tachycardia;
+  final bool? irregular;
 
   const EcgClinicalSheet({
     super.key,
@@ -41,6 +46,9 @@ class EcgClinicalSheet extends StatelessWidget {
       (code: '1100', text: 'Sinus rhythm'),
       (code: '9110', text: '** normal ECG **'),
     ],
+    this.waveform,
+    this.tachycardia,
+    this.irregular,
   });
 
   String get _sexLabel => sex == 'M' ? '남' : sex == 'F' ? '여' : sex;
@@ -129,7 +137,9 @@ class EcgClinicalSheet extends StatelessWidget {
             child: AspectRatio(
               aspectRatio: 720 / 270,
               child: CustomPaint(
-                painter: _EcgGridPainter(layout: _Ecg12LeadLayout()),
+                painter: _EcgGridPainter(
+                  layout: _Ecg12LeadLayout(waveform: waveform),
+                ),
               ),
             ),
           ),
@@ -175,7 +185,9 @@ class EcgClinicalSheet extends StatelessWidget {
             child: AspectRatio(
               aspectRatio: 720 / 110,
               child: CustomPaint(
-                painter: _EcgGridPainter(layout: _EcgRhythmLayout()),
+                painter: _EcgGridPainter(
+                  layout: _EcgRhythmLayout(waveform: waveform),
+                ),
               ),
             ),
           ),
@@ -241,12 +253,18 @@ abstract class _EcgLayout {
   Size get logicalSize;
 }
 
+// MIMIC ECG 채널 순서: I, II, V1~V6, III, aVR, aVL, aVF (PTB-XL 표준)
+// 12-lead 표시 순서(4×3 그리드)
+const _leadOrder = [
+  // (row, col): leadName, channelIndex in waveform
+  [(0, 0, 'I', 0), (0, 1, 'aVR', 9), (0, 2, 'V1', 2), (0, 3, 'V4', 5)],
+  [(1, 0, 'II', 1), (1, 1, 'aVL', 10), (1, 2, 'V2', 3), (1, 3, 'V5', 6)],
+  [(2, 0, 'III', 8), (2, 1, 'aVF', 11), (2, 2, 'V3', 4), (2, 3, 'V6', 7)],
+];
+
 class _Ecg12LeadLayout extends _EcgLayout {
-  static const _leads = [
-    ['I', 'aVR', 'V1', 'V4'],
-    ['II', 'aVL', 'V2', 'V5'],
-    ['III', 'aVF', 'V3', 'V6'],
-  ];
+  final List<List<double>>? waveform;
+  _Ecg12LeadLayout({this.waveform});
 
   @override
   Size get logicalSize => const Size(720, 270);
@@ -265,37 +283,57 @@ class _Ecg12LeadLayout extends _EcgLayout {
         color: AppColors.slate700,
         fontWeight: FontWeight.bold);
 
-    for (int row = 0; row < 3; row++) {
-      for (int col = 0; col < 4; col++) {
-        final x0 = col * cellW;
-        final y0 = row * cellH;
-        // 라벨
+    for (final row in _leadOrder) {
+      for (final cell in row) {
+        final (r, c, name, channelIdx) = cell;
+        final x0 = c * cellW;
+        final y0 = r * cellH;
         final tp = TextPainter(
-          text: TextSpan(text: _leads[row][col], style: labelStyle),
+          text: TextSpan(text: name, style: labelStyle),
           textDirection: TextDirection.ltr,
         )..layout();
         tp.paint(canvas, Offset(x0 + 4, y0 + 4));
-        // calibration pulse + 박동 3개
+
         final baseline = y0 + cellH * 0.55;
         canvas.drawPath(
           _calibrationPath(x0 + 2, baseline, cellH * 0.4),
           stroke,
         );
-        canvas.drawPath(
-          _beatPath(
+
+        if (waveform != null && waveform!.isNotEmpty) {
+          // 실 ECG 파형 — 해당 채널 1000 샘플 → 셀 너비에 맞춰 그리기
+          canvas.drawPath(
+            _realWaveformPath(
+              samples: waveform!,
+              channel: channelIdx,
               startX: x0 + 22,
               baseline: baseline,
-              beatWidth: (cellW - 28) / 3,
-              count: 3,
-              amplitude: cellH * 0.35),
-          stroke,
-        );
+              width: cellW - 28,
+              amplitude: cellH * 0.4,
+            ),
+            stroke,
+          );
+        } else {
+          // 합성 normal sinus 패턴 (fallback)
+          canvas.drawPath(
+            _beatPath(
+                startX: x0 + 22,
+                baseline: baseline,
+                beatWidth: (cellW - 28) / 3,
+                count: 3,
+                amplitude: cellH * 0.35),
+            stroke,
+          );
+        }
       }
     }
   }
 }
 
 class _EcgRhythmLayout extends _EcgLayout {
+  final List<List<double>>? waveform;
+  _EcgRhythmLayout({this.waveform});
+
   @override
   Size get logicalSize => const Size(720, 110);
 
@@ -323,16 +361,64 @@ class _EcgRhythmLayout extends _EcgLayout {
       _calibrationPath(2, baseline, size.height * 0.4),
       stroke,
     );
-    canvas.drawPath(
-      _beatPath(
+
+    if (waveform != null && waveform!.isNotEmpty) {
+      // 실 ECG Lead II 풀스트립 (channel index 1)
+      canvas.drawPath(
+        _realWaveformPath(
+          samples: waveform!,
+          channel: 1,
           startX: 26,
           baseline: baseline,
-          beatWidth: (size.width - 32) / 12,
-          count: 12,
-          amplitude: size.height * 0.35),
-      stroke,
-    );
+          width: size.width - 32,
+          amplitude: size.height * 0.4,
+        ),
+        stroke,
+      );
+    } else {
+      canvas.drawPath(
+        _beatPath(
+            startX: 26,
+            baseline: baseline,
+            beatWidth: (size.width - 32) / 12,
+            count: 12,
+            amplitude: size.height * 0.35),
+        stroke,
+      );
+    }
   }
+}
+
+/// 실 ECG samples [T x 12]에서 채널 하나 뽑아 path로.
+/// PTB-XL은 채널값이 mV 단위 (보통 -2.0 ~ 2.0). 100Hz × 10s = 1000 샘플.
+Path _realWaveformPath({
+  required List<List<double>> samples,
+  required int channel,
+  required double startX,
+  required double baseline,
+  required double width,
+  required double amplitude,
+}) {
+  final p = Path();
+  final n = samples.length;
+  if (n == 0 || channel >= samples[0].length) {
+    p.moveTo(startX, baseline);
+    p.lineTo(startX + width, baseline);
+    return p;
+  }
+  // amplitude를 1mV = amplitude로 사용 (10mm/mV 표준)
+  final dx = width / (n - 1);
+  for (int i = 0; i < n; i++) {
+    final v = samples[i][channel];
+    final y = baseline - v * amplitude * 0.5; // 절반으로 축소 (시각화 안정)
+    final x = startX + i * dx;
+    if (i == 0) {
+      p.moveTo(x, y);
+    } else {
+      p.lineTo(x, y);
+    }
+  }
+  return p;
 }
 
 // calibration pulse — 1mV = amplitude (직사각 박스 모양)
@@ -451,7 +537,38 @@ Future<void> showEcgClinicalSheet(
   required int age,
   required String sex,
   String? patientId,
+  List<List<double>>? waveform,
+  Map<String, dynamic>? ecgVitals,
+  List<Map<String, dynamic>> findings = const [],
 }) {
+  // ecg_vitals → 측정값
+  final hr = (ecgVitals?['heart_rate'] as num?)?.toInt() ?? 88;
+  final tachy = ecgVitals?['tachycardia'] as bool? ?? false;
+  final irreg = ecgVitals?['irregular_rhythm'] as bool? ?? false;
+
+  // findings → interpretation 코드 동적 생성
+  final interp = <({String code, String text})>[];
+  if (findings.isEmpty) {
+    interp.add((code: '1100', text: 'Sinus rhythm'));
+    interp.add((code: '9110', text: '** normal ECG **'));
+  } else {
+    if (!tachy && !irreg) {
+      interp.add((code: '1100', text: 'Sinus rhythm'));
+    } else if (irreg) {
+      interp.add((code: '1200', text: 'Irregular rhythm'));
+    } else if (tachy) {
+      interp.add((code: '1300', text: 'Tachycardia'));
+    }
+    for (int i = 0; i < findings.length && i < 4; i++) {
+      final f = findings[i];
+      final detail = (f['detail'] as String?) ?? (f['name'] as String? ?? '');
+      interp.add((
+        code: '${5000 + i * 10}',
+        text: '** $detail **',
+      ));
+    }
+  }
+
   return showDialog<void>(
     context: context,
     barrierColor: Colors.black54,
@@ -492,6 +609,11 @@ Future<void> showEcgClinicalSheet(
               age: age,
               sex: sex,
               patientId: patientId,
+              hr: hr,
+              tachycardia: tachy,
+              irregular: irreg,
+              waveform: waveform,
+              interpretation: interp,
             ),
           ),
         ),
