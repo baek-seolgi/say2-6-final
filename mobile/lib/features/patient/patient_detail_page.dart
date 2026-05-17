@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/api/patient_api.dart';
 import '../../core/models/ai_rec.dart';
 import '../../shared/theme/app_theme.dart';
+import 'ecg_clinical_sheet.dart';
 
 /// frontend/src/pages/v2/PatientDetailPage.tsx의 AIRecPanel(가운데 컬럼)을 모바일에 맞춤.
 /// 헤더(AI 검사 권고) + 진행 요약 + 1·2·3차 권고 그룹 + 의사 직접 오더 그룹
@@ -469,6 +470,33 @@ class _RecCardState extends ConsumerState<_RecCard> {
     }
   }
 
+  // "검사결과지" 버튼 핸들러 — 현재는 ECG만 지원, CXR/LAB은 placeholder dialog
+  void _openResultSheet(BuildContext context, String modality) {
+    if (modality == 'ECG') {
+      // TODO: 실제 환자 정보 + 측정값 전달. 일단 placeholder.
+      showEcgClinicalSheet(
+        context,
+        patientName: '환자',
+        age: 30,
+        sex: 'M',
+        patientId: widget.encounterId.substring(0, 8),
+      );
+    } else {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('$modality 검사결과지'),
+          content: const Text('이 모달은 검사결과지 미구현 — 추후 추가 예정'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('닫기')),
+          ],
+        ),
+      );
+    }
+  }
+
   IconData _icon(String m) => switch (m) {
         'ECG' => Icons.monitor_heart_outlined,
         'CXR' => Icons.image_outlined,
@@ -592,13 +620,24 @@ class _RecCardState extends ConsumerState<_RecCard> {
             ),
           ],
           if (isDone) ...[
-            const SizedBox(height: 6),
-            Text(
-              '→ 아래 ${r.modality} 결과 확인',
-              style: const TextStyle(
-                  fontSize: 10,
-                  color: AppColors.emerald600,
-                  fontWeight: FontWeight.w500),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 28,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.vunoCyanDim,
+                  side: const BorderSide(color: AppColors.vunoCyanDim),
+                  padding: EdgeInsets.zero,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(2)),
+                ),
+                icon: const Icon(Icons.description_outlined, size: 12),
+                label: const Text('검사결과지',
+                    style: TextStyle(
+                        fontSize: 10, fontWeight: FontWeight.bold)),
+                onPressed: () => _openResultSheet(context, r.modality),
+              ),
             ),
           ],
         ],

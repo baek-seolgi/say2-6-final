@@ -8,6 +8,7 @@ import { AppShell } from "../../components/v2/AppShell";
 import { PatientInfoSidebar } from "../../components/v2/PatientInfoSidebar";
 import { ReportDocument } from "../../components/v2/ReportDocument";
 import { ReportPrintSheet } from "../../components/v2/ReportPrintSheet";
+import { EcgClinicalSheet } from "../../components/v2/EcgClinicalSheet";
 import {
   findPatient,
   setLocalReportStatus, getLocalReportStatus,
@@ -590,17 +591,63 @@ function ResultSheetBody({ sheet }: { sheet: ResultSheet }) {
         ))}
       </div>
 
-      {/* 검사 이미지 */}
-      <div className="border border-slate-300 bg-black overflow-hidden">
-        <img
-          src={sheet.image}
-          alt={sheet.kind === "ECG" ? "심전도" : "흉부 X-ray"}
-          className={cn(
-            "w-full",
-            sheet.kind === "ECG" ? "h-44 object-cover" : "h-72 object-contain bg-black",
-          )}
-        />
-      </div>
+      {/* 검사 시각화 — ECG는 임상용 종이 시트, CXR은 이미지 */}
+      {sheet.kind === "ECG" ? (
+        <div className="border border-slate-300 overflow-hidden">
+          {(() => {
+            // meta에서 환자/일시 정보 추출 (buildExamData 형식: "이름 · 남/30")
+            const patientLine =
+              sheet.meta.find(([k]) => k === "환자")?.[1] ?? "";
+            const tsLine =
+              sheet.meta.find(([k]) => k === "검사일시")?.[1];
+            const m = patientLine.match(/(.+?)\s*·\s*(남|여)\s*\/\s*(\d+)/);
+            const name = m?.[1] ?? "환자";
+            const sex = m?.[2] === "여" ? "F" : "M";
+            const age = m ? parseInt(m[3], 10) : 0;
+            // measures에서 hr / pr / qrs / qt / qtc / axis 추출
+            const measureMap = new Map(
+              (sheet.measures ?? []).map(([k, v]) => [k, v]),
+            );
+            const num = (v?: string) =>
+              v ? parseInt(v.replace(/[^0-9.]/g, ""), 10) : undefined;
+            const qtField = measureMap.get("QT / QTc") ?? "";
+            const [qt, qtc] = qtField.match(/\d+/g) ?? [];
+            return (
+              <EcgClinicalSheet
+                patientName={name}
+                sex={sex}
+                age={age}
+                recordedAt={tsLine}
+                hr={num(measureMap.get("HR"))}
+                prInterval={num(measureMap.get("PR 간격"))}
+                qrsWidth={num(measureMap.get("QRS 폭"))}
+                qt={qt ? parseInt(qt, 10) : undefined}
+                qtc={qtc ? parseInt(qtc, 10) : undefined}
+                pAxis={num(measureMap.get("P axis"))}
+                qrsAxis={num(measureMap.get("QRS axis"))}
+                interpretation={[
+                  { code: "1100", text: "Sinus rhythm" },
+                  {
+                    code: "9110",
+                    text:
+                      sheet.conclusion === "정상"
+                        ? "** normal ECG **"
+                        : `** ${sheet.impression} **`,
+                  },
+                ]}
+              />
+            );
+          })()}
+        </div>
+      ) : (
+        <div className="border border-slate-300 bg-black overflow-hidden">
+          <img
+            src={sheet.image}
+            alt="흉부 X-ray"
+            className="w-full h-72 object-contain bg-black"
+          />
+        </div>
+      )}
 
       {/* 측정값 (ECG) */}
       {sheet.measures && (
