@@ -2,6 +2,13 @@
 .env
 *.env
 
+# 비밀 키 — 절대 커밋 금지 (FCM SA, Firebase admin SDK 등)
+fcm-sa.json
+*-firebase-adminsdk-*.json
+*service-account*.json
+*.pem
+*.key
+
 # 모델 파일
 *.pt
 *.onnx

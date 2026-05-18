@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "870536712026",
+    "project_id": "say2-6-ad3dd",
+    "storage_bucket": "say2-6-ad3dd.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:870536712026:android:c33e991a3ba996e6d8ad63",
+        "android_client_info": {
+          "package_name": "com.say6.say6_doctor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCq9NBw4sfwhsCLDvbUGKDW0nSZJL3yYVo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

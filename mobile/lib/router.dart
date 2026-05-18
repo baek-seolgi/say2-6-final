@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -11,8 +12,13 @@ import 'features/worklist/worklist_page.dart';
 /// /worklist  → 환자 목록 (의사가 환자 선택)
 /// /patient/:id → AI 분석 (모달 권고 승인)
 /// /patient/:id/report → AI 종합소견 생성 (검토·서명)
+///
+/// rootNavigatorKey: FCM 알림 핸들러가 위젯 트리 밖에서 push 할 때 사용.
+final rootNavigatorKey = GlobalKey<NavigatorState>();
+
 final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
+    navigatorKey: rootNavigatorKey,
     initialLocation: '/',
     routes: [
       GoRoute(path: '/', builder: (_, _) => const LoginPage()),

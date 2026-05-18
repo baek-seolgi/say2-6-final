@@ -1,18 +1,68 @@
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'core/api/client.dart';
+import 'core/services/push_service.dart';
+import 'firebase_options.dart';
 import 'router.dart';
 import 'shared/theme/app_theme.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Firebase 초기화 — flutterfire configure가 생성한 firebase_options.dart 사용.
+  // 실패 시 앱은 계속 동작 (FCM만 비활성화).
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    debugPrint('[firebase] init 실패 — 푸시 비활성화 ($e)');
+  }
+
   runApp(const ProviderScope(child: Say6DoctorApp()));
 }
 
-class Say6DoctorApp extends ConsumerWidget {
+class Say6DoctorApp extends ConsumerStatefulWidget {
   const Say6DoctorApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<Say6DoctorApp> createState() => _Say6DoctorAppState();
+}
+
+class _Say6DoctorAppState extends ConsumerState<Say6DoctorApp> {
+  bool _pushBooted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Firebase가 초기화 됐을 때만 부트스트랩 시도.
+    // initState에서 ref 접근은 안전 — postFrameCallback으로 미루기.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (_pushBooted) return;
+      _pushBooted = true;
+      if (Firebase.apps.isEmpty) {
+        debugPrint('[push] Firebase 미초기화 — bootstrap 스킵');
+        return;
+      }
+      final dio = ref.read(dioProvider);
+      final router = ref.read(routerProvider);
+      await PushService.bootstrap(
+        dio: dio,
+        onTap: (encounterId) {
+          // 알림 탭 → /patient/{encounter_id} 딥링크
+          router.go('/patient/$encounterId');
+        },
+        // TODO: 로그인 후 ref.read(authProvider).user.id 같은 식으로 채우면
+        // 해당 의사 단말만 타깃 푸시 가능
+        userId: null,
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final router = ref.watch(routerProvider);
     return MaterialApp.router(
       title: 'say-6 doctor',

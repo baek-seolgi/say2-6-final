@@ -61,9 +61,13 @@ services:
       - BLOOD_PROGNOSIS_URL=http://52.79.251.216:8000   # 같은 LAB 모달의 /predict_6h endpoint
       - CXR_SERVICE_URL=http://52.79.251.216:8002
       - ECG_SERVICE_URL=http://52.79.251.216:8003
+      # FCM 푸시 — fcm-sa.json 마운트 경로 (없으면 fcm.init()가 graceful no-op)
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/fcm-sa.json
     volumes:
       # AWS 자격증명 마운트 (CXR S3 다운로드, MIMIC labevents S3 Select용)
       - ${HOME}/.aws:/root/.aws:ro
+      # FCM 서비스 계정 키 (read-only) — Firebase Admin SDK 인증용
+      - ../backend/fcm-sa.json:/app/fcm-sa.json:ro
     depends_on:
       hapi-fhir:
         condition: service_started
