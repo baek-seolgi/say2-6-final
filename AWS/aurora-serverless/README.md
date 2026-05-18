@@ -42,13 +42,19 @@ DRAI는 의료 표준(FHIR)을 준수하면서 AI 추론 결과도 보존해야 
 
 ```
 aurora-serverless/
-├── README.md           ← 지금 읽고 있는 파일 (전체 개요)
-├── GUIDE.md            ← 상세 설명서 (요금 계산, 각 옵션 설명)
-├── aurora-cluster.yaml ← AWS Aurora 클러스터 인프라 설정
-├── schema.yaml         ← drai_ops DB 테이블 구조 정의
-├── security.yaml       ← 네트워크/암호화/접근 제어 설정
-└── migrations.yaml     ← 실제 실행할 SQL (001~006 순서대로)
+├── README.md             ← 지금 읽고 있는 파일 (전체 개요)
+├── GUIDE.md              ← 상세 설명서 (요금 계산, 각 옵션 설명)
+├── aurora-stack.yaml     ⭐ 정식 CloudFormation 템플릿 (그대로 배포)
+│                            KMS · Secrets Manager · SG · Subnet Group · 클러스터 · writer + reader
+├── schema.yaml           ← drai_ops(central_db) DB 테이블 구조 문서 (참고용)
+├── migrations.yaml       ← 실제 실행할 SQL (001~009 순서대로)
+└── _archive/             ← 옛 설계 yaml (참고용, 배포 안 함)
+    ├── aurora-cluster.yaml   (현재는 aurora-stack.yaml 로 흡수됨)
+    └── security.yaml         (현재는 aurora-stack.yaml 로 흡수됨)
 ```
+
+> 💡 **배포에 쓸 파일은 `aurora-stack.yaml` 하나**입니다.
+> 옛 `aurora-cluster.yaml` + `security.yaml` 은 설계 의도를 보존하기 위해 `_archive/` 에 남겨뒀어요.
 
 ---
 
@@ -115,11 +121,27 @@ device_tokens (FK 없음 — 환자가 아닌 의사 단말)
 
 ## 배포 방법
 
-### 1단계: Aurora 클러스터 생성
-`aurora-cluster.yaml`을 참고해 AWS 콘솔 또는 CLI로 클러스터 생성.
+### 1단계: 사전 조건 — network 스택 먼저 배포
+```bash
+aws cloudformation deploy \
+  --stack-name say2-6team-network \
+  --template-file ../network/network-stack.yaml \
+  --capabilities CAPABILITY_NAMED_IAM
+```
 
-### 2단계: 보안 설정
-`security.yaml`을 참고해 VPC, Security Group, Secrets Manager, IAM 설정.
+### 2단계: Aurora 스택 한 번에 배포
+```bash
+aws cloudformation deploy \
+  --stack-name say2-6team-aurora \
+  --template-file aurora-stack.yaml \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+      ProjectName=say2-6team \
+      Environment=dev \
+      Owner=yji
+```
+
+→ KMS 키, Secrets Manager(master 비번 자동 생성), Security Group, Subnet Group, 클러스터, writer+reader 인스턴스 모두 자동 생성. 약 10~15분 소요.
 
 ### 3단계: DB 초기화
 `migrations.yaml`의 SQL을 001부터 순서대로 실행:

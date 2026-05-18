@@ -233,6 +233,11 @@ tables:
         type: TIMESTAMPTZ
         nullable: true
         description: "서명 시각"
+      - name: last_reminder_at
+        type: TIMESTAMPTZ
+        nullable: true
+        description: "FCM 미서명 리마인더 발송 시각 (스팸 방지). NULL = 미발송"
+        added_in: "migration 009"
       - name: created_at
         type: TIMESTAMPTZ
         nullable: false
@@ -254,6 +259,10 @@ tables:
       - name: idx_dr_status
         columns: [status, created_at]
         order: DESC
+      - name: idx_dr_unsigned_reminder
+        columns: [created_at, last_reminder_at]
+        where: "status <> 'signed'"
+        description: "리마인더 워커가 미서명 + 5분 경과 row 빠르게 찾도록 부분 인덱스 (migration 009)"
 
   # ──────────────────────────────────────────────────────────
   # 4. modal_events — WebSocket 이벤트 로그 (디버그/재전송 대비)

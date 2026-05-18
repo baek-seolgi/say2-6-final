@@ -1,0 +1,704 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  say2-6team monitoring stack - CloudWatch Alarms + SNS Email only.
+
+  [범위 - 인프라 알람 전용]
+  Aurora / ECS / ALB 헬스 메트릭 → SNS Topic → Email (운영팀).
+  임상 알람(critical 환자, 미서명 소견서 등)은 백엔드 코드의 FCM 디스패처가
+  의사 폰으로 직접 발송 (이 스택과 무관).
+
+  [의존]
+  - aurora-stack: AuroraClusterId ImportValue (필수)
+  - ecs-stack:    EcsClusterName, ServiceNames (Phase 2 - Conditions로 토글)
+  - alb-stack:    AlbFullName, TargetGroupFullName (Phase 2 - Conditions로 토글)
+
+  [배포 패턴]
+  Phase 1: Aurora 알람만 (지금 - DB 스택만 떴을 때)
+  Phase 2: ECS + ALB 알람 추가 (ECS·ALB 스택 떴을 때 EnableEcsAlarms=true,
+                                  EnableAlbAlarms=true 로 stack update)
+
+Metadata:
+  Project:
+    Name: say2-6team
+    Purpose: Infra alarms - Aurora, ECS, ALB → SNS email
+  Notes:
+    - 임상 critical 알림은 FCM (별도 트랙).
+    - 두 SNS Topic 분리: critical-alerts (즉시 대응) / warning-alerts (정보).
+
+# ============================================================================
+Parameters:
+# ============================================================================
+  ProjectName:
+    Type: String
+    Default: say2-6team
+    Description: Project prefix.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  Owner:
+    Type: String
+    Default: yji
+    AllowedValues: [unassigned, wja, lji, hkt, yji]
+
+  CriticalAlertEmail:
+    Type: String
+    Default: oncall-team@hospital.co.kr
+    Description: CRITICAL 알람 수신 이메일 (운영팀, 즉시 대응 필요)
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    ConstraintDescription: Must be a valid email.
+
+  WarningAlertEmail:
+    Type: String
+    Default: dev-team@hospital.co.kr
+    Description: WARNING 알람 수신 이메일 (개발팀, 정보성)
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    ConstraintDescription: Must be a valid email.
+
+  # ── Phase 2 토글 ──────────────────────────────────────────
+  EnableEcsAlarms:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set true after ECS stack is deployed.
+
+  EcsClusterName:
+    Type: String
+    Default: "DISABLED"
+    MinLength: 1
+    Description: ECS 클러스터 이름 (EnableEcsAlarms=true일 때 필수, false면 placeholder OK)
+
+  OrchestratorServiceName:
+    Type: String
+    Default: orchestrator
+    Description: ECS Service 이름 (중앙 백엔드)
+
+  EcgSvcServiceName:
+    Type: String
+    Default: ecg-svc
+    Description: ECG 모달 ECS Service 이름
+
+  CxrSvcServiceName:
+    Type: String
+    Default: cxr-svc
+    Description: CXR 모달 ECS Service 이름
+
+  LabSvcServiceName:
+    Type: String
+    Default: lab-svc
+    Description: LAB 모달 ECS Service 이름
+
+  EnableAlbAlarms:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set true after ALB stack is deployed.
+
+  AlbFullName:
+    Type: String
+    Default: "DISABLED"
+    MinLength: 1
+    Description: >
+      ALB 메트릭용 풀네임 (예: "app/say2-6team-alb/abc123...").
+      ALB의 LoadBalancerFullName 출력을 그대로 전달. EnableAlbAlarms=false면 placeholder OK.
+
+  TargetGroupFullName:
+    Type: String
+    Default: "DISABLED"
+    MinLength: 1
+    Description: Backend Target Group full name (e.g. "targetgroup/say2-6team-tg/..."). EnableAlbAlarms=false면 placeholder OK.
+
+# ============================================================================
+Conditions:
+# ============================================================================
+  EcsAlarmsEnabled: !Equals [!Ref EnableEcsAlarms, "true"]
+  AlbAlarmsEnabled: !Equals [!Ref EnableAlbAlarms, "true"]
+
+# ============================================================================
+Resources:
+# ============================================================================
+
+  # ─────────────────────────────────────────────────────────────────
+  # 1. SNS Topics + Email Subscriptions
+  # ─────────────────────────────────────────────────────────────────
+  CriticalAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-critical-alerts"
+      DisplayName: !Sub "${ProjectName} CRITICAL"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  CriticalAlertsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref CriticalAlertsTopic
+      Protocol: email
+      Endpoint: !Ref CriticalAlertEmail
+
+  WarningAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-warning-alerts"
+      DisplayName: !Sub "${ProjectName} WARNING"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
+
+  WarningAlertsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref WarningAlertsTopic
+      Protocol: email
+      Endpoint: !Ref WarningAlertEmail
+
+  # ─────────────────────────────────────────────────────────────────
+  # 2. Aurora 알람 (4개) - Phase 1, 항상 생성
+  # ─────────────────────────────────────────────────────────────────
+  AuroraCpuHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-aurora-cpu-high"
+      AlarmDescription: "Aurora CPU > 80% for 10 min - 쿼리 부하 점검"
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBClusterIdentifier
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-aurora-cluster-id"
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      OKActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  AuroraAcuMaxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-aurora-acu-max"
+      AlarmDescription: "Aurora ACU > 3.6 (max_acu 4.0의 90%) - 곧 capacity 한도"
+      Namespace: AWS/RDS
+      MetricName: ServerlessDatabaseCapacity
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 3.6
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBClusterIdentifier
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-aurora-cluster-id"
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: notBreaching
+
+  AuroraConnectionsHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-aurora-connections-high"
+      AlarmDescription: "Aurora 연결 수 > 100 - 커넥션 풀 이상 또는 누수 의심"
+      Namespace: AWS/RDS
+      MetricName: DatabaseConnections
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBClusterIdentifier
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-aurora-cluster-id"
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  AuroraFreeableMemoryLowAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-aurora-memory-low"
+      AlarmDescription: "Aurora 여유 메모리 < 256MB - capacity 부족 임박"
+      Namespace: AWS/RDS
+      MetricName: FreeableMemory
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 268435456    # 256MB in bytes
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: DBClusterIdentifier
+          Value:
+            Fn::ImportValue: !Sub "${ProjectName}-aurora-cluster-id"
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: notBreaching
+
+  # ─────────────────────────────────────────────────────────────────
+  # 3. ECS 알람 (3개) - Phase 2, EnableEcsAlarms=true 일 때만 생성
+  # ─────────────────────────────────────────────────────────────────
+  EcsOrchestratorCpuHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-orchestrator-cpu-high"
+      AlarmDescription: "Orchestrator ECS 서비스 CPU > 80% - 스케일아웃 검토"
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref OrchestratorServiceName
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  EcsOrchestratorMemoryHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-orchestrator-memory-high"
+      AlarmDescription: "Orchestrator ECS 서비스 메모리 > 85%"
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref OrchestratorServiceName
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  EcsOrchestratorTaskDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-orchestrator-tasks-zero"
+      AlarmDescription: "Orchestrator 실행 중인 Task 0개 - 서비스 다운"
+      Namespace: ECS/ContainerInsights
+      MetricName: RunningTaskCount
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref OrchestratorServiceName
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: breaching   # 메트릭 부재 = 다운으로 간주
+
+  # ─────────────────────────────────────────────────────────────────
+  # 3b. ECS 모달 알람 (9개) - Phase 2, ECG/CXR/LAB 각자 CPU/Memory/TaskDown
+  #
+  # orchestrator만 감시하면 새벽에 모달 컨테이너 다운 시 인지 불가.
+  # 새벽 환자 없을 때 ecg-svc 죽으면 아침까지 모름 → 출근하자마자 사고.
+  # ─────────────────────────────────────────────────────────────────
+
+  # ── ECG 모달 ──────────────────────────────────────────────
+  EcsEcgCpuHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-ecg-cpu-high"
+      AlarmDescription: "ECG 모달 ECS 서비스 CPU > 80%"
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref EcgSvcServiceName
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  EcsEcgMemoryHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-ecg-memory-high"
+      AlarmDescription: "ECG 모달 ECS 서비스 메모리 > 85%"
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref EcgSvcServiceName
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  EcsEcgTaskDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-ecg-tasks-zero"
+      AlarmDescription: "ECG 모달 실행 Task 0개 - 모달 다운"
+      Namespace: ECS/ContainerInsights
+      MetricName: RunningTaskCount
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref EcgSvcServiceName
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: breaching
+
+  # ── CXR 모달 ──────────────────────────────────────────────
+  EcsCxrCpuHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-cxr-cpu-high"
+      AlarmDescription: "CXR 모달 ECS 서비스 CPU > 80%"
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref CxrSvcServiceName
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  EcsCxrMemoryHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-cxr-memory-high"
+      AlarmDescription: "CXR 모달 ECS 서비스 메모리 > 85%"
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref CxrSvcServiceName
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  EcsCxrTaskDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-cxr-tasks-zero"
+      AlarmDescription: "CXR 모달 실행 Task 0개 - 모달 다운"
+      Namespace: ECS/ContainerInsights
+      MetricName: RunningTaskCount
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref CxrSvcServiceName
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: breaching
+
+  # ── LAB 모달 ──────────────────────────────────────────────
+  EcsLabCpuHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-lab-cpu-high"
+      AlarmDescription: "LAB 모달 ECS 서비스 CPU > 80%"
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref LabSvcServiceName
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  EcsLabMemoryHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-lab-memory-high"
+      AlarmDescription: "LAB 모달 ECS 서비스 메모리 > 85%"
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref LabSvcServiceName
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  EcsLabTaskDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EcsAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ecs-lab-tasks-zero"
+      AlarmDescription: "LAB 모달 실행 Task 0개 - 모달 다운"
+      Namespace: ECS/ContainerInsights
+      MetricName: RunningTaskCount
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref EcsClusterName
+        - Name: ServiceName
+          Value: !Ref LabSvcServiceName
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: breaching
+
+  # ─────────────────────────────────────────────────────────────────
+  # 4. ALB 알람 (3개) - Phase 2, EnableAlbAlarms=true 일 때만 생성
+  # ─────────────────────────────────────────────────────────────────
+  # ELB_5XX: ALB 자체가 백엔드 도달 못 함 (인프라 문제 — 라우팅·연결 실패)
+  Alb5xxHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlbAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-alb-elb-5xx-high"
+      AlarmDescription: "ALB ELB_5XX > 10건/5분 - 라우팅/연결 실패 (인프라)"
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_ELB_5XX_Count
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref AlbFullName
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: notBreaching
+
+  # Target_5XX: 백엔드 코드가 5xx 응답 (앱 버그 — Python 예외, DB 쿼리 실패 등)
+  AlbTarget5xxHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlbAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-alb-target-5xx-high"
+      AlarmDescription: "ALB Target_5XX > 10건/5분 - 백엔드 코드가 5xx 토함 (앱 버그)"
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref AlbFullName
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: notBreaching
+
+  AlbTargetResponseTimeHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlbAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-alb-latency-high"
+      AlarmDescription: "ALB 평균 응답 시간 > 3초 - 백엔드 성능 저하"
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 3
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref AlbFullName
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  AlbUnhealthyHostsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlbAlarmsEnabled
+    Properties:
+      AlarmName: !Sub "${ProjectName}-alb-unhealthy-hosts"
+      AlarmDescription: "ALB target group에 UnHealthy 호스트 존재"
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref AlbFullName
+        - Name: TargetGroup
+          Value: !Ref TargetGroupFullName
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: notBreaching
+
+  # ─────────────────────────────────────────────────────────────────
+  # 5. 모달 커스텀 메트릭 알람 (2개) - 백엔드가 put_metric_data 호출 시 발동
+  #
+  # Namespace: DRAI/Modal
+  # 메트릭 발행 위치: app/clients/modal_http.py (백엔드 모달 호출 래퍼)
+  #   - 추론 에러 시      → InferenceErrorCount  (Value=1)
+  #   - 응답 5초 초과 시  → HighLatencyCount     (Value=1)
+  # ─────────────────────────────────────────────────────────────────
+  ModalInferenceErrorSpikeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-modal-inference-error-spike"
+      AlarmDescription: >-
+        AI 모달 추론 에러가 5분간 3회 이상 발생.
+        ECG/CXR/LAB 컨테이너 다운, 모델 로드 실패, OOM, 입력 데이터 손상 등 의심.
+      Namespace: DRAI/Modal
+      MetricName: InferenceErrorCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: notBreaching
+
+  ModalHighLatencySpikeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-modal-high-latency-spike"
+      AlarmDescription: >-
+        AI 모달 추론 응답이 5초 이상 걸리는 사례가 5분간 5회 이상.
+        모달 컨테이너 CPU/메모리 압박, 콜드스타트, 모델 캐시 미스 등 의심.
+      Namespace: DRAI/Modal
+      MetricName: HighLatencyCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref WarningAlertsTopic
+      TreatMissingData: notBreaching
+
+  # ─────────────────────────────────────────────────────────────────
+  # 6. FHIR sync queue 적체 알람 (1개) - 백엔드가 매 사이클 QueueDepth 발행
+  #
+  # Namespace: DRAI/FhirSync
+  # 발행 위치: app/agent/fhir_retry_worker.py 5분 폴링 시 마지막에 emit
+  # 의미: HAPI 다운이 누적돼서 큐가 N건 이상 쌓이면 운영팀이 알아야 함.
+  # ─────────────────────────────────────────────────────────────────
+  FhirSyncQueueBacklogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-fhir-sync-queue-backlog"
+      AlarmDescription: >-
+        fhir_sync_queue 적체 100건 초과 (10분 지속).
+        HAPI FHIR 장기 다운 또는 retry worker 정지 의심.
+      Namespace: DRAI/FhirSync
+      MetricName: QueueDepth
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 100
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref CriticalAlertsTopic
+      TreatMissingData: notBreaching
+
+# ============================================================================
+Outputs:
+# ============================================================================
+  CriticalTopicArn:
+    Description: SNS topic for CRITICAL alerts (즉시 대응)
+    Value: !Ref CriticalAlertsTopic
+    Export:
+      Name: !Sub "${ProjectName}-critical-alerts-topic-arn"
+
+  WarningTopicArn:
+    Description: SNS topic for WARNING alerts (정보성)
+    Value: !Ref WarningAlertsTopic
+    Export:
+      Name: !Sub "${ProjectName}-warning-alerts-topic-arn"
+
+  AlarmsCount:
+    Description: Currently active alarm count breakdown
+    Value: !Sub
+      - "aurora=4, ecs=${EcsN}, alb=${AlbN}, modal=2"
+      - EcsN: !If [EcsAlarmsEnabled, "3", "0"]
+        AlbN: !If [AlbAlarmsEnabled, "3", "0"]

@@ -65,7 +65,7 @@ network:
 encryption:
   at_rest:
     enabled: true
-    kms_key_alias: alias/say2-6team-aurora-key
+    kms_key_alias: alias/say2-6team-aurora-kms
     kms_key_description: "Aurora 디스크 암호화 (AES-256)"
 
   in_transit:

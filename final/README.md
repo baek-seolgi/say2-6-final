@@ -377,10 +377,17 @@ done
 
 # 2. Aurora v2 클러스터 생성 + 마이그레이션 실행
 cd AWS/aurora-serverless
-# aurora-cluster.yaml → CloudFormation 또는 Terraform 적용
-# migrations.yaml (SQL 7개 + 008 device_tokens) 순서대로 psql 실행
+# aurora-stack.yaml (정식 CloudFormation) 한 줄 배포:
+#   aws cloudformation deploy --stack-name say2-6team-aurora \
+#     --template-file aurora-stack.yaml --capabilities CAPABILITY_IAM
+# 그 후 migrations.yaml (SQL 9개) 순서대로 RDS Data API 또는 psql 실행
 
-# 3. ECS 서비스 생성 (Cloud Map 등록 포함)
+# 3. 모니터링 알람 배포 (Aurora 메트릭 알람 + SNS 이메일)
+#   aws cloudformation deploy --stack-name say2-6team-monitoring-alarms \
+#     --template-file ../monitoring/monitoring-alarms-stack.yaml \
+#     --parameter-overrides CriticalAlertEmail=oncall@example.com WarningAlertEmail=dev@example.com
+
+# 4. ECS 서비스 생성 (Cloud Map 등록 포함)
 # (AWS/ 안의 compute/ecs-services.yaml — 작성 예정)
 ```
 

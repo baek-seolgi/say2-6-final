@@ -66,7 +66,7 @@ cluster:
 
   encryption:
     enabled: true
-    kms_key: alias/say2-6team-aurora-key
+    kms_key: alias/say2-6team-aurora-kms
 
   backup:
     retention_days: 7
