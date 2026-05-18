@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from app.clients import cw_metrics
 from app.db import fhir_sync_queue as ops_fhir_queue
 from app.fhir import client as fhir
 
@@ -55,7 +56,7 @@ async def _process_one(item: dict) -> None:
 
 
 async def fhir_retry_loop():
-    """앱이 살아있는 동안 5분 주기로 큐 처리."""
+    """앱이 살아있는 동안 5분 주기로 큐 처리 + CloudWatch에 큐 적체 메트릭 발행."""
     logger.info("[fhir-retry] worker started (interval=%ds)", RETRY_INTERVAL_SEC)
     while True:
         try:
@@ -65,6 +66,15 @@ async def fhir_retry_loop():
                 for item in pending:
                     await _process_one(item)
             # else: pending 없으면 조용히 다음 사이클로
+
+            # 처리 후 현재 큐 적체 수치를 CloudWatch에 게이지로 발행
+            # FhirSyncQueueBacklogAlarm: 100 초과 10분 지속 시 발동
+            try:
+                depth = await ops_fhir_queue.pending_count()
+                asyncio.create_task(cw_metrics.emit_fhir_queue_depth(depth))
+            except Exception as e:
+                logger.warning("[fhir-retry] queue depth 메트릭 발행 실패: %s", e)
+
         except Exception as e:
             # 워커 자체가 죽지 않도록 모든 예외 catch
             logger.error("[fhir-retry] worker iteration error: %s", e)
