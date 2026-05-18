@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, Activity, LogOut } from "lucide-react";
+import { ChevronDown, Activity, LogOut } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/cn";
 import { useAuth } from "../../lib/v2/auth";
@@ -7,43 +7,21 @@ import {
   isLivePatient,
   getLocalReportStatus,
 } from "../../lib/v2/demoStore";
-import { getUnsignedReportCount } from "../../lib/v2/api";
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
+import { NotificationsDropdown } from "./NotificationsDropdown";
 
 interface AppShellProps {
-  /** 명시 prop이 있으면 그 값을, 없으면 백엔드 /reports/unsigned-count 자동 폴링. */
+  /** @deprecated NotificationsDropdown이 자체 폴링하므로 더는 쓰이지 않음. 호출부 호환용. */
   notifications?: number;
   children: ReactNode;
   /** 헤더 숨김 (로그인 등) */
   bare?: boolean;
 }
 
-export function AppShell({ notifications, children, bare }: AppShellProps) {
-  // notifications prop을 명시한 경우 그대로 사용 (데모/테스트 케이스).
-  // 미지정이면 백엔드 /reports/unsigned-count로 30초마다 폴링.
-  const [autoCount, setAutoCount] = useState<number>(0);
-
-  useEffect(() => {
-    if (notifications !== undefined || bare) return;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const n = await getUnsignedReportCount();
-        if (!cancelled) setAutoCount(n);
-      } catch {
-        /* 네트워크 흔들림 — 다음 폴링에서 복구 */
-      }
-    };
-    tick();                                  // 첫 1회 즉시
-    const id = setInterval(tick, 30_000);    // 이후 30s 주기
-    return () => { cancelled = true; clearInterval(id); };
-  }, [notifications, bare]);
-
-  const effectiveCount = notifications ?? autoCount;
-
+export function AppShell({ children, bare }: AppShellProps) {
   return (
     <div className="v2-root demo-root min-h-screen flex flex-col">
-      {!bare && <Header notifications={effectiveCount} />}
+      {!bare && <Header />}
       <main className="flex-1">{children}</main>
       {!bare && <DisclaimerFooter />}
     </div>
@@ -66,7 +44,7 @@ function DisclaimerFooter() {
   );
 }
 
-function Header({ notifications }: { notifications: number }) {
+function Header() {
   const { pathname } = useLocation();
   const nav = useNavigate();
   const { user, logout } = useAuth();
@@ -126,21 +104,7 @@ function Header({ notifications }: { notifications: number }) {
             <span className="font-semibold tracking-wider uppercase">Live</span>
           </span>
 
-          <button
-            type="button"
-            onClick={() => nav("/demo/reports?status=preliminary")}
-            title={notifications > 0
-              ? `미서명 소견서 ${notifications}건 — 클릭하면 목록으로 이동`
-              : "미서명 소견서 없음"}
-            className="relative h-9 w-9 hover:bg-white/10 grid place-items-center transition-colors"
-          >
-            <Bell className="h-4 w-4 text-white" />
-            {notifications > 0 && (
-              <span className="absolute top-1 right-1 h-4 min-w-[16px] px-1 bg-vuno-cyan text-vuno-bg text-[10px] font-bold grid place-items-center">
-                {notifications}
-              </span>
-            )}
-          </button>
+          <NotificationsDropdown />
 
           <div className="flex items-center gap-2 px-3 h-9 hover:bg-white/10 cursor-pointer transition-colors">
             <div className="h-7 w-7 bg-vuno-cyan/20 border border-vuno-cyan/40 text-vuno-cyan grid place-items-center text-xs font-bold">

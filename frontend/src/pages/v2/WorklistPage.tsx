@@ -25,11 +25,16 @@ function regNo(p: DemoPatient): string {
 // 우선순위: 백엔드 diagnostic_reports.status → 로컬 캐시(데모 환자) → demoStore 추정.
 // 단, "작성 가능(done)"·"검토 중(review)"은 AI 분석이 완료된 경우에만 표시.
 // (ReportEditorPage 가 마운트만 해도 "preliminary"를 캐시하는 leak 방어)
+//
+// backend Map은 두 가지 키로 동시 등록:
+//   · encounter_id 그대로 (라이브 환자: p.id === encounter_id)
+//   · "subject:{subject_id}" (데모 환자: p.id="P-{subject_id}"라 직접 매칭 불가)
 function soGyeonOf(
   p: DemoPatient,
   backend: Map<string, BackendReportStatus>,
 ): SoGyeon {
-  const b = backend.get(p.id);
+  const subjectKey = p.mimic?.subject_id ? `subject:${p.mimic.subject_id}` : null;
+  const b = backend.get(p.id) ?? (subjectKey ? backend.get(subjectKey) : undefined);
   if (b === "signed" || b === "amended") return "signed";
   if (b === "reviewed") return "review";
   if (b === "preliminary") return "done";
@@ -72,14 +77,41 @@ export default function WorklistPage() {
   const [page, setPage] = useState(1);
 
   // 백엔드 소견서 상태 — encounter_id → status
+  // 모바일에서 서명/검토 변경 시 웹도 자동 반영되도록 10초 폴링 + 탭 포커스 시 즉시 refresh.
   const [backendStatus, setBackendStatus] = useState<Map<string, BackendReportStatus>>(new Map());
   useEffect(() => {
     let stopped = false;
-    listReports().then((reports) => {
-      if (stopped) return;
-      setBackendStatus(new Map(reports.map((r) => [r.encounter_id, r.status])));
-    });
-    return () => { stopped = true; };
+    const refresh = async () => {
+      try {
+        const reports = await listReports();
+        if (stopped) return;
+        // 양방향 키: encounter_id + "subject:{subject_id}"로 등록해
+        // 라이브 환자/데모 환자 모두 lookup 성공.
+        const m = new Map<string, BackendReportStatus>();
+        for (const r of reports) {
+          m.set(r.encounter_id, r.status);
+          if (r.subject_id) m.set(`subject:${r.subject_id}`, r.status);
+        }
+        setBackendStatus(m);
+      } catch {
+        /* swallow — backend down 등 일시 오류 */
+      }
+    };
+    refresh();
+    const intervalId = window.setInterval(refresh, 3_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("say6:reports:invalidate", refresh);
+    return () => {
+      stopped = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("say6:reports:invalidate", refresh);
+    };
   }, []);
 
   const filtered = useMemo(() => {

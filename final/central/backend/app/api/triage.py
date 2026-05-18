@@ -224,17 +224,36 @@ async def submit_triage(form: TriageSubmission, background_tasks: BackgroundTask
       Vitals · Past History · AllergyIntolerance · MedicationStatement
     """
     try:
+        # ── 0) 중복 환자 가드 (Soft) ─
+        # 같은 MIMIC subject_id로 활성 encounter가 있으면 새로 만들지 않고 기존 반환.
+        # 프론트는 duplicate=true를 보고 기존 진료 화면으로 라우팅한다.
+        dup_subject_id = form.mimic.subject_id if form.mimic else None
+        if dup_subject_id:
+            existing = await ops_encounters.get_active_by_subject(dup_subject_id)
+            if existing:
+                logger.info(
+                    "[triage] duplicate subject_id=%s → return existing enc=%s",
+                    dup_subject_id, existing["encounter_id"],
+                )
+                return {
+                    "patient_id": existing["patient_id"],
+                    "encounter_id": existing["encounter_id"],
+                    "chief_complaint": existing.get("chief_complaint", ""),
+                    "duplicate": True,
+                    "status": "active",
+                }
+
         # Get ML models from app state
         from fastapi import Request
         from app.main import app
-        
+
         ml_models_initial = getattr(app.state, 'ml_models_initial', None)
         ml_models_followup = getattr(app.state, 'ml_models_followup', None)
         ml_metadata_initial = getattr(app.state, 'ml_metadata_initial', None)
         ml_metadata_followup = getattr(app.state, 'ml_metadata_followup', None)
         cc_map = getattr(app.state, 'cc_map', None)
         feature_extractor = getattr(app.state, 'feature_extractor', None)
-        
+
         # ── 1) UUID 발급 (HAPI 의존 X) ─
         # 우리가 직접 UUID 발급 → HAPI는 client-assigned ID로 PUT
         # → HAPI 다운해도 ID 발급 가능, 운영 DB INSERT 정상 진행
@@ -391,6 +410,7 @@ async def submit_triage(form: TriageSubmission, background_tasks: BackgroundTask
             "rationale": decision.get("rationale", ""),
             "risk_level": decision.get("risk_level", "unknown"),
             "status": "created",
+            "duplicate": False,
         }
 
     except Exception as e:

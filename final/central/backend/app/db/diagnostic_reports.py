@@ -166,13 +166,21 @@ async def list_recent(
     limit: int = 20,
     status: str | None = None,
 ) -> list[dict[str, Any]]:
+    """소견서 목록 + encounters JOIN으로 subject_id 동봉.
+
+    프론트(WorklistPage/ReportListPage)가 데모 환자(P-{subject_id})와 backend
+    encounter_id를 매칭할 키가 없어서 subject_id를 함께 내려준다.
+    """
     if status:
         rows = await db.fetch(
             """
-            SELECT id, encounter_id, ai_risk_level, status, created_at, signed_at
-            FROM diagnostic_reports
-            WHERE status = $2
-            ORDER BY created_at DESC
+            SELECT dr.id, dr.encounter_id, e.subject_id,
+                   e.patient_name, e.chief_complaint,
+                   dr.ai_risk_level, dr.status, dr.created_at, dr.signed_at
+            FROM diagnostic_reports dr
+            LEFT JOIN encounters e ON e.encounter_id = dr.encounter_id
+            WHERE dr.status = $2
+            ORDER BY dr.created_at DESC
             LIMIT $1
             """,
             limit, status,
@@ -180,9 +188,12 @@ async def list_recent(
     else:
         rows = await db.fetch(
             """
-            SELECT id, encounter_id, ai_risk_level, status, created_at, signed_at
-            FROM diagnostic_reports
-            ORDER BY created_at DESC
+            SELECT dr.id, dr.encounter_id, e.subject_id,
+                   e.patient_name, e.chief_complaint,
+                   dr.ai_risk_level, dr.status, dr.created_at, dr.signed_at
+            FROM diagnostic_reports dr
+            LEFT JOIN encounters e ON e.encounter_id = dr.encounter_id
+            ORDER BY dr.created_at DESC
             LIMIT $1
             """,
             limit,

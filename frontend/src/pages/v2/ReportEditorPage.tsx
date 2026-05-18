@@ -112,6 +112,8 @@ export default function ReportEditorPage() {
         if (r.report_id != null) setReportId(Number(r.report_id));
         setReportStatus("preliminary");
         // r.narrative(Bedrock 장문)는 DB에 ai_diagnosis로 저장되지만 본문엔 사용하지 않음
+        // 알림 패널/리스트 즉시 새로고침 — preliminary 상태가 '서명 필요'로 즉시 뜨도록.
+        window.dispatchEvent(new Event("say6:reports:invalidate"));
       }
     })();
 

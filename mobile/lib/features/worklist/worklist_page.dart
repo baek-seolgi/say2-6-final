@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/api/encounters_api.dart';
+import '../../core/api/reports_api.dart';
 import '../../core/models/encounter.dart';
+import '../../features/notifications/notifications_panel.dart';
 import '../../shared/theme/app_theme.dart';
 import '../../shared/widgets/ktas_badge.dart';
 
@@ -39,6 +41,7 @@ class WorklistPage extends ConsumerWidget {
           ],
         ),
         actions: [
+          _NotificationBell(),
           IconButton(
             icon: const Icon(Icons.refresh, color: AppColors.slate600),
             onPressed: () => ref.invalidate(encountersListProvider),
@@ -79,6 +82,71 @@ class WorklistPage extends ConsumerWidget {
           );
         },
       ),
+    );
+  }
+}
+
+/// AppBar 우측에 표시되는 알림 종 — reports/list 폴링 결과로 미서명·Critical·검사완료
+/// 합산 카운트를 뱃지로 표시. 탭하면 [NotificationsPanel]을 모달 바텀시트로 띄움.
+class _NotificationBell extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final async = ref.watch(reportsListProvider);
+    // 패널과 동일한 시간 기반 분류:
+    //   · 검사 완료·작성 가능: 0~5분 (preliminary)
+    //   · 미서명 소견서: 5분 경과 (preliminary or reviewed)
+    //   · Critical: 미서명 상태 + ai_risk_level=critical
+    final count = async.maybeWhen(
+      data: (rows) {
+        int n = 0;
+        for (final r in rows) {
+          if (r.status == 'signed' || r.status == 'amended') continue;
+          final e = r.createdAt == null
+              ? null
+              : DateTime.now().difference(r.createdAt!).inMinutes;
+          final overdue = e != null && e >= 5;
+
+          if (r.status == 'preliminary' && !overdue) n++; // ready
+          if ((r.status == 'preliminary' || r.status == 'reviewed') &&
+              overdue) {
+            n++; // unsigned
+          }
+          if (r.aiRiskLevel == 'critical') n++; // critical
+        }
+        return n;
+      },
+      orElse: () => 0,
+    );
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        IconButton(
+          icon: const Icon(Icons.notifications_outlined,
+              color: AppColors.slate600),
+          onPressed: () => NotificationsPanel.show(context),
+        ),
+        if (count > 0)
+          Positioned(
+            top: 6,
+            right: 6,
+            child: Container(
+              constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              decoration: BoxDecoration(
+                color: AppColors.critical,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                '$count',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

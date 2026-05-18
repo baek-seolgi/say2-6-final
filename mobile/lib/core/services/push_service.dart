@@ -16,6 +16,9 @@ import 'package:dio/dio.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../router.dart';
+import '../../shared/widgets/top_notification_banner.dart';
+
 class PushService {
   PushService._();
 
@@ -61,10 +64,24 @@ class PushService {
     }
     // 2) 백그라운드 → 알림 탭 → 앱 포그라운드 복귀
     FirebaseMessaging.onMessageOpenedApp.listen((msg) => _handleTap(msg, onTap));
-    // 3) 포그라운드 수신 — 이 환자 화면 보고 있을 가능성 있으니 그냥 로그
-    //    (필요하면 in-app banner로 띄우는 추가 작업)
+    // 3) 포그라운드 수신 — 상단 Top Banner로 in-app 표시.
+    //    탭하면 NotificationsPanel 대신 해당 환자 화면으로 즉시 이동.
     FirebaseMessaging.onMessage.listen((msg) {
       debugPrint('[push] 포그라운드 수신 — ${msg.notification?.title}');
+      final ctx = rootNavigatorKey.currentContext;
+      if (ctx == null) return; // 앱 초기화 도중
+      final n = msg.notification;
+      final risk = (msg.data['risk_level'] ?? '').toString().toLowerCase();
+      final encounterId = (msg.data['encounter_id'] ?? '').toString();
+      // ignore: use_build_context_synchronously — rootNavigatorKey.currentContext는
+      // 비동기 갭이 아니라 즉시 위 라인에서 가져온 context이므로 안전.
+      TopNotificationBanner.show(
+        ctx,
+        title: n?.title ?? '새 알림',
+        body: n?.body,
+        critical: risk == 'critical',
+        onTap: encounterId.isEmpty ? null : () => onTap(encounterId),
+      );
     });
   }
 

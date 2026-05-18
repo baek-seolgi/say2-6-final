@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -411,6 +412,7 @@ class _ReportSheet extends StatelessWidget {
             ),
           ),
           editable
+              // 편집 모드 — 원본 마크다운을 그대로 보여주고 의사가 수정 가능
               ? Padding(
                   padding: const EdgeInsets.all(10),
                   child: TextField(
@@ -427,17 +429,69 @@ class _ReportSheet extends StatelessWidget {
                     ),
                   ),
                 )
+              // 읽기 모드 — Bedrock 출력의 마크다운(## 헤더, ** 굵게, > 인용 등) 정식 렌더링
               : Padding(
                   padding: const EdgeInsets.all(10),
-                  child: Text(
-                    controller.text.isEmpty
-                        ? 'AI 종합 소견 생성 중…'
-                        : controller.text,
-                    style: const TextStyle(
-                        fontSize: 12,
-                        height: 1.5,
-                        color: AppColors.slate800),
-                  ),
+                  child: controller.text.isEmpty
+                      ? const Text('AI 종합 소견 생성 중…',
+                          style: TextStyle(
+                              fontSize: 12,
+                              height: 1.5,
+                              color: AppColors.slate800))
+                      : MarkdownBody(
+                          data: controller.text,
+                          shrinkWrap: true,
+                          styleSheet: MarkdownStyleSheet(
+                            p: const TextStyle(
+                                fontSize: 12,
+                                height: 1.55,
+                                color: AppColors.slate800),
+                            h1: const TextStyle(
+                                fontSize: 16,
+                                height: 1.4,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.slate900),
+                            h2: const TextStyle(
+                                fontSize: 14,
+                                height: 1.4,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.slate900),
+                            h3: const TextStyle(
+                                fontSize: 13,
+                                height: 1.4,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.slate800),
+                            strong: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.slate900),
+                            em: const TextStyle(
+                                fontStyle: FontStyle.italic),
+                            blockquote: const TextStyle(
+                                fontSize: 11,
+                                color: AppColors.slate600,
+                                fontStyle: FontStyle.italic),
+                            blockquoteDecoration: BoxDecoration(
+                              color: AppColors.slate50,
+                              border: const Border(
+                                left: BorderSide(
+                                    color: AppColors.vunoCyanDim, width: 3),
+                              ),
+                            ),
+                            blockquotePadding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            listBullet: const TextStyle(
+                                fontSize: 12, color: AppColors.slate800),
+                            code: const TextStyle(
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                                backgroundColor: AppColors.slate100),
+                            horizontalRuleDecoration: const BoxDecoration(
+                              border: Border(
+                                top: BorderSide(color: AppColors.slate300),
+                              ),
+                            ),
+                          ),
+                        ),
                 ),
           // 발행
           Container(

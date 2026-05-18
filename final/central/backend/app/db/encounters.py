@@ -80,6 +80,19 @@ async def get_by_subject(subject_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+async def get_active_by_subject(subject_id: str) -> dict[str, Any] | None:
+    """MIMIC subject_id로 활성(status='active') 방문 조회 — 중복 입력 가드용."""
+    row = await db.fetchone(
+        """
+        SELECT * FROM encounters
+        WHERE subject_id = $1 AND status = 'active'
+        ORDER BY started_at DESC LIMIT 1
+        """,
+        subject_id,
+    )
+    return dict(row) if row else None
+
+
 async def close_encounter(encounter_id: str) -> None:
     """응급실 방문 종료."""
     await db.execute(
@@ -93,14 +106,23 @@ async def close_encounter(encounter_id: str) -> None:
 
 
 async def list_active(limit: int = 50) -> list[dict[str, Any]]:
-    """현재 활성 방문 목록."""
+    """현재 활성 방문 목록 — subject_id가 있으면 그 환자당 최신 1건만 노출.
+
+    subject_id가 null인 row(MIMIC ID 없는 일반 입력)는 encounter_id로 fallback
+    → DISTINCT-ON 키가 항상 unique해져서 dedup이 no-op이 됨.
+    """
     rows = await db.fetch(
         """
-        SELECT encounter_id, patient_id, chief_complaint,
-               patient_name, patient_age, patient_gender,
-               started_at
-        FROM encounters
-        WHERE status = 'active'
+        SELECT encounter_id, patient_id, subject_id, chief_complaint,
+               patient_name, patient_age, patient_gender, started_at
+        FROM (
+            SELECT DISTINCT ON (COALESCE(subject_id, encounter_id::text))
+                   encounter_id, patient_id, subject_id, chief_complaint,
+                   patient_name, patient_age, patient_gender, started_at
+            FROM encounters
+            WHERE status = 'active'
+            ORDER BY COALESCE(subject_id, encounter_id::text), started_at DESC
+        ) latest
         ORDER BY started_at DESC
         LIMIT $1
         """,

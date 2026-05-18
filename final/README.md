@@ -70,7 +70,9 @@
               ▼                            ▼                            ▼
     ┌─────────────────┐        ┌────────────────────┐        ┌──────────────────┐
     │ Aurora Serverless│       │ AWS Bedrock         │       │ S3 (MIMIC 데이터)   │
-    │   v2 (PostgreSQL)│       │ • Claude Opus 4.7   │       │ • ECG waveforms   │
+    │   v2 (PostgreSQL)│       │ • Claude Haiku 4.5  │       │ • ECG waveforms   │
+    │                  │       │   / Sonnet 4.6      │       │                   │
+    │                  │       │   (자동 선택)        │       │                   │
     │ ┌─────────────┐ │        │ • Titan Embeddings  │       │ • CXR images      │
     │ │ central_db  │ │        │   (RAG용)            │       │ • Lab labevents   │
     │ │  (운영 DB)   │ │        └────────────────────┘       └──────────────────┘
@@ -228,7 +230,7 @@ Aurora Cluster: say2-6team-aurora-cluster
 
 ### 3) Bedrock Claude (종합 소견 + 복잡 추론)
 
-- 모델: `global.anthropic.claude-opus-4-7`
+- 모델: 자동 선택 — 기본 `claude-haiku-4-5` / critical·고난도 시 `claude-sonnet-4-6` (`select_model()` 함수)
 - 입력: 3개 모달 결과 + RAG 유사 케이스 (ChromaDB)
 - 출력: 한국어 의사용 종합 소견서 (Markdown)
 - 위치: [`final/central/backend/app/agent/orchestrator_utils/bedrock_reporter.py`](central/backend/app/agent/orchestrator_utils/bedrock_reporter.py)
@@ -293,13 +295,13 @@ say-6-project/
 │       │   ├── Dockerfile
 │       │   └── requirements.txt
 │       │
-│       ├── frontend/                    # React 데스크탑 (의사용)
-│       │   └── src/
-│       │       ├── lib/v2/ws.ts         # WebSocket 클라이언트
-│       │       └── pages/v2/PatientDetailPage.tsx  # LIVE 뱃지
-│       │
 │       ├── infra/                       # docker-compose.yml (로컬 개발용)
 │       └── tests/
+│
+├── frontend/                             # ⭐ React 데스크탑 (의사용) — 루트에 위치
+│   └── src/
+│       ├── lib/v2/ws.ts                  # WebSocket 클라이언트
+│       └── pages/v2/PatientDetailPage.tsx # LIVE 뱃지
 │
 ├── ecg-svc/                              # ECG 모달 서비스 (ECR push 대상)
 │   ├── layer1_preprocessing/            # WFDB → (1, 12, 1000) 정규화
@@ -342,8 +344,8 @@ say-6-project/
 cd final/central/infra
 docker compose up -d --build
 
-# 2. 프론트엔드 (별도 터미널)
-cd final/central/frontend
+# 2. 프론트엔드 (별도 터미널) — 루트 frontend/ 가 본체
+cd frontend
 npm install && npm run dev   # → http://localhost:3000
 
 # 3. (선택) 모바일 앱
@@ -404,7 +406,8 @@ cd AWS/aurora-serverless
 | `FHIR_BASE_URL` | `http://hapi-fhir:8080/fhir` | `http://hapi-fhir.local:8080/fhir` |
 | `OPS_DB_URL` | `postgresql://admin:secret@postgres:5432/central_db` | Aurora 엔드포인트 (Secrets Manager) |
 | `AWS_REGION` | `ap-northeast-2` | (Task Role이 자동 인식) |
-| `BEDROCK_MODEL_ID` | `global.anthropic.claude-opus-4-7` | 동일 |
+| `RAG_LLM_HAIKU` | `global.anthropic.claude-haiku-4-5-20251001-v1:0` | 동일 (기본 모델) |
+| `RAG_LLM_SONNET` | `global.anthropic.claude-sonnet-4-6` | 동일 (critical·고난도 케이스) |
 | `ECG_SERVICE_URL` | `http://52.79.251.216:8003` | `http://ecg-svc.local:8000` |
 | `CXR_SERVICE_URL` | `http://52.79.251.216:8002` | `http://cxr-svc.local:8000` |
 | `LAB_SERVICE_URL` | `http://52.79.251.216:8000` | `http://lab-svc.local:8000` |

@@ -43,8 +43,8 @@ class EcgClinicalSheet extends StatelessWidget {
     this.pAxis = 52,
     this.qrsAxis = 38,
     this.interpretation = const [
-      (code: '1100', text: 'Sinus rhythm'),
-      (code: '9110', text: '** normal ECG **'),
+      (code: 'Rhythm', text: 'Sinus rhythm'),
+      (code: '결론', text: '** normal ECG **'),
     ],
     this.waveform,
     this.tachycardia,
@@ -546,24 +546,24 @@ Future<void> showEcgClinicalSheet(
   final tachy = ecgVitals?['tachycardia'] as bool? ?? false;
   final irreg = ecgVitals?['irregular_rhythm'] as bool? ?? false;
 
-  // findings → interpretation 코드 동적 생성
+  // findings → 임상 판독 라벨 생성 (left column = 분류 라벨, right = 내용)
   final interp = <({String code, String text})>[];
   if (findings.isEmpty) {
-    interp.add((code: '1100', text: 'Sinus rhythm'));
-    interp.add((code: '9110', text: '** normal ECG **'));
+    interp.add((code: 'Rhythm', text: 'Sinus rhythm'));
+    interp.add((code: '결론', text: '** normal ECG **'));
   } else {
     if (!tachy && !irreg) {
-      interp.add((code: '1100', text: 'Sinus rhythm'));
+      interp.add((code: 'Rhythm', text: 'Sinus rhythm'));
     } else if (irreg) {
-      interp.add((code: '1200', text: 'Irregular rhythm'));
+      interp.add((code: 'Rhythm', text: 'Irregular rhythm'));
     } else if (tachy) {
-      interp.add((code: '1300', text: 'Tachycardia'));
+      interp.add((code: 'Rhythm', text: 'Tachycardia'));
     }
     for (int i = 0; i < findings.length && i < 4; i++) {
       final f = findings[i];
       final detail = (f['detail'] as String?) ?? (f['name'] as String? ?? '');
       interp.add((
-        code: '${5000 + i * 10}',
+        code: '소견 ${i + 1}',     // ← "5000" 같은 임의 숫자 대신 의미 있는 라벨
         text: '** $detail **',
       ));
     }

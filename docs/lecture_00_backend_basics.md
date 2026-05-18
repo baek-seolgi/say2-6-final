@@ -283,7 +283,7 @@ POST는 **두 가지 의미**로 쓰입니다:
               ↓
    🏛️ orchestrator:
         ① 3개 모달 결과 + RAG 유사 케이스 수집
-        ② Bedrock Claude Opus 4.7에 종합 판독 요청 (약 8초)
+        ② Bedrock Claude Haiku 4.5 (critical 시 Sonnet 4.6)에 종합 판독 요청 (약 8초)
         ③ diagnostic_reports 테이블에 INSERT
         ④ WebSocket으로 "report_generated" 이벤트 푸시
 ```

@@ -43,7 +43,7 @@
 | 📞 **병원 내선 전화 교환원** | **AWS Cloud Map** | "ECG실 부탁해요"라고만 말하면 알아서 현재 ECG실 IP로 연결 |
 | 📁 **의무기록실 (국제 표준)** | **HAPI FHIR 서버** | 외부 EMR과 주고받을 수 있는 FHIR R4 표준 기록 보관 |
 | 🗃️ **내부 차트장 (우리 병원 전용)** | **Aurora `central_db`** | AI 원본 결과·waveform·이벤트 로그 — 빠른 작업 메모장 |
-| 🧠 **베테랑 종합 판독 교수** | **AWS Bedrock — Claude Opus 4.7** | 모달 3개 결과 + 유사 케이스를 보고 한국어 종합 소견서 작성 |
+| 🧠 **베테랑 종합 판독 교수** | **AWS Bedrock — Claude Haiku 4.5 / Sonnet 4.6** | 모달 3개 결과 + 유사 케이스를 보고 한국어 종합 소견서 작성 |
 | 📟 **무선 호출기 (삐삐)** | **WebSocket** | 의사 데스크탑에 결과 도착 시 즉시 띵! |
 | 🚨 **응급 카톡 알림** | **Firebase FCM** | critical 케이스는 의사 폰에 OS 레벨 푸시 |
 
@@ -59,7 +59,7 @@
                                                                    (↕ 📞 Cloud Map .local DNS)
 
 [관리 부서 — 별도 운영]
-🗃️ Aurora v2  |  🧠 Bedrock Opus 4.7  |  🚨 FCM  |  📂 S3 (MIMIC)
+🗃️ Aurora v2  |  🧠 Bedrock Haiku/Sonnet (자동 선택)  |  🚨 FCM  |  📂 S3 (MIMIC)
 ```
 
 > 💡 **포인트**
@@ -192,14 +192,14 @@ CXR 결과 도착 (5초)  → 🗃️ Aurora INSERT → 📟 WebSocket "modal_co
 
 이때 화면 상단에는 **🟢 LIVE 뱃지**가 떠 있어서, "지금 실시간 연결되어 있다"는 걸 의사가 시각적으로 확인할 수 있어요.
 
-### 🧠 **5초 — Bedrock Claude Opus 4.7에 종합 판독 의뢰**
+### 🧠 **5초 — Bedrock Claude Haiku 4.5 / Sonnet 4.6에 종합 판독 의뢰**
 
 3개 결과가 다 도착하면 orchestrator는 그것들을 들고 베테랑 교수에게 갑니다.
 
 ```
 🧑‍💼: "선생님, 이 세 결과 + RAG로 찾은 유사 케이스 5건 보시고 종합 소견 작성해주세요."
 
-🧠 Claude Opus 4.7 (Bedrock):
+🧠 Claude Haiku 4.5 / Sonnet 4.6 (Bedrock):
    "ECG ST 분절 상승 + CXR 폐부종 + BNP 12,462 → STEMI + 급성 심부전 의증.
     추가 검사: CT 관상동맥 / Echocardiography
     처치: 산소 / 니트로글리세린 / 항혈소판제 / 헤파린 ..."
@@ -321,7 +321,7 @@ sequenceDiagram
     participant S3 as 📂 S3 (MIMIC)
     participant DB as 🗃️ Aurora<br/>central_db
     participant FHIR as 📁 HAPI FHIR
-    participant Bedrock as 🧠 Bedrock<br/>Claude Opus 4.7
+    participant Bedrock as 🧠 Bedrock<br/>Claude Haiku 4.5 / Sonnet 4.6
     participant FCM as 🚨 Firebase FCM
 
     의사->>ALB: POST /api/triage (트리아지 폼)
@@ -432,7 +432,7 @@ sequenceDiagram
    (모달은 AWS 키 없음 → 보안 단순화 = Least Privilege)
 
 4. 모달 결과가 도착할 때마다 WebSocket으로 의사 데스크탑 화면이 자동 갱신되고,
-   3개가 다 모이면 Bedrock Claude Opus 4.7이 한국어 종합 소견서를 작성한다.
+   3개가 다 모이면 Bedrock Claude Haiku 4.5 / Sonnet 4.6이 한국어 종합 소견서를 작성한다.
 
 5. risk_level=critical이면 Firebase FCM으로 의사 모바일에 OS 푸시 알림이 가고,
    탭하면 해당 환자 상세 페이지로 딥링크 이동한다.
@@ -495,7 +495,7 @@ sequenceDiagram
 | [Python `asyncio.gather`](https://docs.python.org/3/library/asyncio-task.html#asyncio.gather) | 병렬 호출의 한 줄 구현 |
 | [WebSocket vs Polling vs SSE](https://ably.com/topic/websockets-vs-sse) | 실시간 통신 3대장 비교 |
 | [Firebase FCM 아키텍처](https://firebase.google.com/docs/cloud-messaging/concept-options) | 모바일 푸시 게이트웨이 |
-| [Anthropic Claude Opus 4.7](https://www.anthropic.com/claude) | 우리가 쓰는 LLM의 능력 |
+| [Anthropic Claude Haiku 4.5 / Sonnet 4.6](https://www.anthropic.com/claude) | 우리가 쓰는 LLM의 능력 |
 
 ---
 

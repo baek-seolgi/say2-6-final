@@ -23,12 +23,17 @@ const STATUS_META: Record<ReportStatus, { ko: string; cls: string }> = {
 // 우선순위: 백엔드 diagnostic_reports.status → 로컬 캐시(데모 환자) → demoStore 추정.
 // 단, "작성 가능(ready)"·"검토 중(review)"은 AI 분석이 완료(aiStatus === "done")돼야 표시.
 // (ReportEditorPage 가 마운트만 해도 "preliminary"를 캐시하는 leak를 방어 — 캐시는 AI 완료 후에만 신뢰)
+//
+// backend Map은 양방향 키:
+//   · encounter_id (라이브 환자 — p.id === encounter_id)
+//   · "subject:{subject_id}" (데모 환자 — p.id="P-{subject_id}"로 직접 매칭 불가)
 function reportStatusOf(
   p: DemoPatient,
   backend: Map<string, BackendReportStatus>,
 ): ReportStatus {
   // 백엔드에 실제 report 레코드가 있으면 그게 진실 — generate_report 가 호출됐다는 뜻
-  const b = backend.get(p.id);
+  const subjectKey = p.mimic?.subject_id ? `subject:${p.mimic.subject_id}` : null;
+  const b = backend.get(p.id) ?? (subjectKey ? backend.get(subjectKey) : undefined);
   if (b === "signed" || b === "amended") return "signed";
   if (b === "reviewed") return "review";
   if (b === "preliminary") return "ready";
@@ -61,15 +66,40 @@ export default function ReportListPage() {
   const [query, setQuery] = useState("");
   const patients = getAllPatients();
 
-  // 백엔드 소견서 상태 — encounter_id → status
+  // 백엔드 소견서 상태 — encounter_id / subject:{subject_id} 양방향 키.
+  // 모바일에서 서명 시 웹도 자동 반영되도록 10초 폴링 + 탭 포커스 즉시 refresh.
   const [backendStatus, setBackendStatus] = useState<Map<string, BackendReportStatus>>(new Map());
   useEffect(() => {
     let stopped = false;
-    listReports().then((reports) => {
-      if (stopped) return;
-      setBackendStatus(new Map(reports.map((r) => [r.encounter_id, r.status])));
-    });
-    return () => { stopped = true; };
+    const refresh = async () => {
+      try {
+        const reports = await listReports();
+        if (stopped) return;
+        const m = new Map<string, BackendReportStatus>();
+        for (const r of reports) {
+          m.set(r.encounter_id, r.status);
+          if (r.subject_id) m.set(`subject:${r.subject_id}`, r.status);
+        }
+        setBackendStatus(m);
+      } catch {
+        /* swallow */
+      }
+    };
+    refresh();
+    const intervalId = window.setInterval(refresh, 3_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("say6:reports:invalidate", refresh);
+    return () => {
+      stopped = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("say6:reports:invalidate", refresh);
+    };
   }, []);
 
   const counts = useMemo(() => {

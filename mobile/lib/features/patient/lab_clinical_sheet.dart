@@ -191,6 +191,49 @@ Future<void> showLabClinicalSheet(
   );
 }
 
+// 백엔드 LAB 응답의 feature 키(영문)를 의사용 한국어 라벨로 매핑.
+// 백엔드: app/clients/lab_loader.py 의 LOINC/MIMIC feature 식별자와 일치.
+const Map<String, String> _featureLabelKo = {
+  'wbc': '백혈구 (WBC)',
+  'hemoglobin': '헤모글로빈 (Hb)',
+  'hematocrit': '헤마토크릿 (Hct)',
+  'platelet': '혈소판 (PLT)',
+  'creatinine': '크레아티닌 (Cr)',
+  'bun': 'BUN',
+  'sodium': '나트륨 (Na+)',
+  'potassium': '칼륨 (K+)',
+  'chloride': '염소 (Cl-)',
+  'bicarbonate': '중탄산 (HCO3-)',
+  'glucose': '혈당 (Glu)',
+  'calcium': '칼슘 (Ca2+)',
+  'magnesium': '마그네슘 (Mg2+)',
+  'phosphate': '인 (PO4)',
+  'ast': 'AST (GOT)',
+  'alt': 'ALT (GPT)',
+  'alp': 'ALP',
+  'albumin': '알부민 (Alb)',
+  'total_bilirubin': '총 빌리루빈',
+  'lactate': '젖산 (Lactate)',
+  'ck_mb': 'CK-MB',
+  'troponin_t': '트로포닌 T',
+  'nt_probnp': 'NT-proBNP',
+  'crp': 'CRP',
+  'd_dimer': 'D-dimer',
+  'procalcitonin': '프로칼시토닌',
+  'inr': 'INR',
+  'ph': 'pH (혈가스)',
+  'po2': 'PaO2',
+  'pco2': 'PaCO2',
+  'hco3': 'HCO3-',
+  'base_excess': '염기과잉 (BE)',
+  'spo2': 'SpO2',
+};
+
+String _humanFeatureName(String feature) {
+  final key = feature.toLowerCase().trim();
+  return _featureLabelKo[key] ?? feature.toUpperCase();
+}
+
 class _LabRow extends StatelessWidget {
   final Map<String, dynamic> row;
   final bool isLast;
@@ -198,15 +241,45 @@ class _LabRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = (row['name'] ?? row['item'] ?? row['label'] ?? '—').toString();
+    // ── 백엔드 lab_summary 스키마 우선 (feature/status/reference_low+high) ──
+    // 옛 스키마 호환: name/flag/ref_range 도 fallback.
+    final featureRaw = row['feature']?.toString()
+        ?? row['name']?.toString()
+        ?? row['item']?.toString()
+        ?? row['label']?.toString();
+    final name = featureRaw != null ? _humanFeatureName(featureRaw) : '—';
     final value = (row['value'] ?? '—').toString();
     final unit = row['unit']?.toString();
-    final ref = row['ref_range']?.toString() ?? row['reference']?.toString();
-    final flag = row['flag']?.toString();
-    final abnormal = flag != null && flag.isNotEmpty && flag != 'normal';
-    final flagColor = (flag == 'H' || flag == 'HH' || flag == 'high')
+
+    // ref: reference_low ~ reference_high 조합 우선
+    String? ref;
+    final refLow = row['reference_low'];
+    final refHigh = row['reference_high'];
+    if (refLow != null && refHigh != null) {
+      ref = '$refLow~$refHigh';
+    } else {
+      ref = row['ref_range']?.toString() ?? row['reference']?.toString();
+    }
+
+    // status → flag 변환 (backend: 'normal'/'high'/'low'/'critical')
+    final status = (row['status']?.toString() ?? row['flag']?.toString() ?? '').toLowerCase();
+    String flag = '';
+    if (status == 'high' || status == 'h') {
+      flag = 'H';
+    } else if (status == 'critical_high') {
+      flag = 'HH';
+    } else if (status == 'low' || status == 'l') {
+      flag = 'L';
+    } else if (status == 'critical_low') {
+      flag = 'LL';
+    } else if (status == 'critical') {
+      flag = '!';
+    }
+
+    final abnormal = status.isNotEmpty && status != 'normal' && status != 'unmeasured';
+    final flagColor = (flag == 'H' || flag == 'HH')
         ? AppColors.critical
-        : (flag == 'L' || flag == 'LL' || flag == 'low')
+        : (flag == 'L' || flag == 'LL')
             ? const Color(0xFF2563EB)
             : AppColors.slate700;
 
@@ -256,7 +329,7 @@ class _LabRow extends StatelessWidget {
           SizedBox(
             width: 30,
             child: Text(
-              flag != null && flag.isNotEmpty ? flag : '',
+              flag.isNotEmpty ? flag : '',
               textAlign: TextAlign.center,
               style: TextStyle(
                   fontSize: 11,
@@ -270,100 +343,185 @@ class _LabRow extends StatelessWidget {
   }
 }
 
+// 웹과 동일한 6h 예측 5개 메트릭 라벨 (PROG_KO)
+const Map<String, String> _prog6hLabel = {
+  'hemoglobin_down': 'Hemoglobin 감소',
+  'creatinine_up':   'Creatinine 증가',
+  'potassium_worse': 'Potassium 악화',
+  'lactate_up':      'Lactate 증가',
+  'troponin_up':     'Troponin 상승',
+};
+
 class _PrognosisCard extends StatelessWidget {
   final Map<String, dynamic> prognosis;
   const _PrognosisCard({required this.prognosis});
 
   @override
   Widget build(BuildContext context) {
-    // prognosis_6h shape: {risk_score, hemoglobin_down, creatinine_up, ...}
-    final risk = prognosis['risk_score'] as num?;
-    final downs = <MapEntry<String, dynamic>>[];
-    prognosis.forEach((k, v) {
-      if (k == 'risk_score' || v == null || v == false) return;
-      downs.add(MapEntry(k, v));
-    });
-    final isHigh = (risk ?? 0).toDouble() >= 0.5;
+    // 웹 ModalViews.tsx 의 LabPrognosisChart 와 동일한 5개 메트릭 — XGBoost 5-앙상블 출력
+    final metrics = _prog6hLabel.entries.map((e) {
+      final v = (prognosis[e.key] as num?)?.toDouble() ?? 0.0;
+      return (key: e.key, label: e.value, value: v);
+    }).toList();
+
+    final mean = metrics.isEmpty
+        ? 0.0
+        : metrics.map((m) => m.value).reduce((a, b) => a + b) / metrics.length;
+
+    final Color toneFg;
+    final Color toneBg;
+    final Color toneBorder;
+    final String toneLabel;
+    if (mean >= 0.6) {
+      toneLabel = '고위험';
+      toneFg = AppColors.critical;
+      toneBg = AppColors.critical.withAlpha(20);
+      toneBorder = AppColors.critical.withAlpha(150);
+    } else if (mean >= 0.4) {
+      toneLabel = '중간 위험';
+      toneFg = AppColors.amber700;
+      toneBg = AppColors.amber50;
+      toneBorder = AppColors.amber300;
+    } else {
+      toneLabel = '저위험';
+      toneFg = AppColors.emerald600;
+      toneBg = AppColors.emerald600.withAlpha(20);
+      toneBorder = AppColors.emerald600.withAlpha(120);
+    }
+
+    // warnings 배열 (백엔드 prognosis_6h.warnings)
+    final warnings = (prognosis['warnings'] as List?)?.cast<String>() ?? const [];
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: isHigh
-            ? AppColors.critical.withAlpha(20)
-            : AppColors.amber50,
-        border: Border.all(
-            color: isHigh
-                ? AppColors.critical.withAlpha(150)
-                : AppColors.amber300),
+        color: toneBg,
+        border: Border.all(color: toneBorder),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 헤더 — 6시간 후 악화 예측 + 종합 등급
           Row(
             children: [
-              Icon(
-                isHigh ? Icons.warning_amber : Icons.trending_up,
-                size: 16,
-                color: isHigh ? AppColors.critical : AppColors.amber700,
-              ),
+              Icon(Icons.trending_up, size: 16, color: toneFg),
               const SizedBox(width: 6),
-              Expanded(
+              const Expanded(
+                child: Text('XGBoost 5-앙상블 · 6시간 후 악화 예측',
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.slate800)),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: toneFg.withAlpha(30),
+                  border: Border(left: BorderSide(color: toneFg, width: 3)),
+                ),
                 child: Text(
-                  '6시간 후 악화 예측',
+                  '종합 $toneLabel ${(mean * 100).toStringAsFixed(0)}%',
                   style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: isHigh
-                          ? AppColors.critical
-                          : AppColors.amber700),
+                      fontSize: 11, fontWeight: FontWeight.bold, color: toneFg),
                 ),
               ),
-              if (risk != null)
-                Text(
-                  '${(risk * 100).toStringAsFixed(0)}%',
-                  style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      fontFamily: 'monospace',
-                      color: isHigh
-                          ? AppColors.critical
-                          : AppColors.amber700),
-                ),
             ],
           ),
-          if (downs.isNotEmpty) ...[
+          // warnings 표시
+          if (warnings.isNotEmpty) ...[
             const SizedBox(height: 6),
-            ...downs.take(5).map((e) => Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text('· ${_prognosisLabel(e.key)}',
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+              decoration: BoxDecoration(
+                color: AppColors.critical.withAlpha(25),
+                border: Border.all(color: AppColors.critical.withAlpha(120)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber, size: 12, color: AppColors.critical),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      '경고: ${warnings.join(", ")}',
                       style: const TextStyle(
-                          fontSize: 11,
-                          color: AppColors.slate700,
-                          height: 1.4)),
-                )),
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.critical),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
+          const SizedBox(height: 8),
+          // 5개 메트릭 막대 차트
+          ...metrics.map((m) => Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: _Prog6hBar(label: m.label, value: m.value),
+              )),
         ],
       ),
     );
   }
+}
 
-  String _prognosisLabel(String key) {
-    switch (key) {
-      case 'hemoglobin_down':
-        return '혈색소 감소 위험';
-      case 'creatinine_up':
-        return '크레아티닌 상승 위험';
-      case 'potassium_abnormal':
-        return '칼륨 이상 위험';
-      case 'platelet_down':
-        return '혈소판 감소 위험';
-      case 'wbc_up':
-        return '백혈구 상승 위험';
-      default:
-        return key;
-    }
+// 6h 예측 단일 메트릭 막대 — label + 0~100% bar + 값
+class _Prog6hBar extends StatelessWidget {
+  final String label;
+  final double value; // 0.0 ~ 1.0
+  const _Prog6hBar({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final pct = (value * 100).clamp(0, 100);
+    final Color barColor = value >= 0.6
+        ? AppColors.critical
+        : value >= 0.4
+            ? AppColors.amber700
+            : AppColors.emerald600;
+    return Row(
+      children: [
+        SizedBox(
+          width: 96,
+          child: Text(label,
+              style: const TextStyle(fontSize: 10, color: AppColors.slate700)),
+        ),
+        Expanded(
+          child: Container(
+            height: 10,
+            decoration: BoxDecoration(
+              color: AppColors.slate100,
+              borderRadius: BorderRadius.circular(2),
+            ),
+            child: FractionallySizedBox(
+              alignment: Alignment.centerLeft,
+              widthFactor: value.clamp(0.0, 1.0).toDouble(),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: barColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        SizedBox(
+          width: 36,
+          child: Text(
+            '${pct.toStringAsFixed(0)}%',
+            textAlign: TextAlign.right,
+            style: TextStyle(
+                fontSize: 10,
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.bold,
+                color: barColor),
+          ),
+        ),
+      ],
+    );
   }
 }
 

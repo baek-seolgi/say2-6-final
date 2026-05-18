@@ -105,6 +105,7 @@ class PatientDetailPage extends ConsumerWidget {
                             recs: byRank[r]!,
                             encounterId: patientId,
                             modalResults: data.modalResults,
+                            patient: data.patient,
                           ),
                           const SizedBox(height: 10),
                         ],
@@ -114,6 +115,7 @@ class PatientDetailPage extends ConsumerWidget {
                             recs: manualRecs,
                             encounterId: patientId,
                             modalResults: data.modalResults,
+                            patient: data.patient,
                           ),
                           const SizedBox(height: 10),
                         ],
@@ -121,7 +123,18 @@ class PatientDetailPage extends ConsumerWidget {
                         if (allDone) const _AllDoneNotice(),
                       ],
                       const SizedBox(height: 12),
-                      _ModalResultsSection(modalResults: data.modalResults),
+                      // 검사 직접 오더 — ECG/CXR/LAB 3개 버튼 (AI 권고와 무관)
+                      _DirectOrderPanel(
+                        encounterId: patientId,
+                        patient: data.patient,
+                        recommendations: data.recommendations,
+                        modalResults: data.modalResults,
+                      ),
+                      const SizedBox(height: 12),
+                      _ModalResultsSection(
+                        modalResults: data.modalResults,
+                        patient: data.patient,
+                      ),
                     ],
                   ),
                 ),
@@ -284,11 +297,13 @@ class _RankGroup extends StatelessWidget {
   final List<AIRec> recs;
   final String encounterId;
   final Map<String, ModalSummary> modalResults;
+  final PatientInfo patient;
   const _RankGroup({
     required this.rank,
     required this.recs,
     required this.encounterId,
     required this.modalResults,
+    required this.patient,
   });
 
   @override
@@ -354,6 +369,7 @@ class _RankGroup extends StatelessWidget {
                   _RecCard(
                     rec: recs[i],
                     encounterId: encounterId,
+                    patient: patient,
                     modal: modalResults[recs[i].modality],
                   ),
                 ],
@@ -366,15 +382,202 @@ class _RankGroup extends StatelessWidget {
   }
 }
 
-// 의사 직접 오더 그룹 — slate 톤
+// 검사 직접 오더 패널 — ECG / CXR / LAB 3개 버튼 항상 표시
+// 웹 PatientDetailPage.tsx 의 ManualOrderPanel 과 동일 디자인.
+// AI 권고와 무관하게 의사가 즉시 모달 실행 트리거 가능.
+class _DirectOrderPanel extends ConsumerStatefulWidget {
+  final String encounterId;
+  final PatientInfo patient;
+  final List<AIRec> recommendations;
+  final Map<String, ModalSummary> modalResults;
+  const _DirectOrderPanel({
+    required this.encounterId,
+    required this.patient,
+    required this.recommendations,
+    required this.modalResults,
+  });
+
+  @override
+  ConsumerState<_DirectOrderPanel> createState() => _DirectOrderPanelState();
+}
+
+class _DirectOrderPanelState extends ConsumerState<_DirectOrderPanel> {
+  final Set<String> _requesting = {}; // 5초간 로딩 표시용
+  final Set<String> _requested = {};  // 클릭 즉시 영구 마킹
+
+  Future<void> _request(String modality) async {
+    setState(() {
+      _requested.add(modality);
+      _requesting.add(modality);
+    });
+    try {
+      await requestOrder(
+        ref,
+        encounterId: widget.encounterId,
+        patientId: widget.patient.subjectId ?? widget.encounterId,
+        modality: modality,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$modality 직접 오더 — 분석 시작'),
+          backgroundColor: AppColors.slate800,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('오더 실패: $e'), backgroundColor: AppColors.critical),
+      );
+      setState(() => _requested.remove(modality));
+    } finally {
+      if (mounted) {
+        Future.delayed(const Duration(seconds: 5), () {
+          if (mounted) setState(() => _requesting.remove(modality));
+        });
+      }
+    }
+  }
+
+  // 해당 modality가 이미 AI 권고 또는 의사 오더에 들어있는지
+  bool _isAlreadyOrdered(String modality) {
+    if (_requested.contains(modality)) return true;
+    return widget.recommendations.any((r) => r.modality == modality);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const all = ['ECG', 'CXR', 'LAB'];
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.slate50,
+        border: Border.all(color: AppColors.slate300),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: AppColors.slate200)),
+            ),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('검사 직접 오더',
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.slate800)),
+                SizedBox(height: 2),
+                Text('AI 권고 외 검사를 의사가 직접 지시',
+                    style: TextStyle(fontSize: 10, color: AppColors.slate500)),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(10),
+            child: Row(
+              children: [
+                for (final m in all) ...[
+                  if (m != all.first) const SizedBox(width: 8),
+                  Expanded(child: _buildBtn(m)),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBtn(String modality) {
+    final already = _isAlreadyOrdered(modality);
+    final loading = _requesting.contains(modality);
+
+    final IconData icon = switch (modality) {
+      'ECG' => Icons.monitor_heart_outlined,
+      'CXR' => Icons.image_outlined,
+      _ => Icons.science_outlined,
+    };
+
+    final String label = switch (modality) {
+      'ECG' => 'ECG',
+      'CXR' => 'CXR',
+      _ => 'LAB',
+    };
+
+    final Color bg;
+    final Color fg;
+    final Color border;
+    final String hint;
+    if (already) {
+      bg = AppColors.slate100;
+      fg = AppColors.slate400;
+      border = AppColors.slate200;
+      hint = '오더됨';
+    } else if (loading) {
+      bg = AppColors.amber50;
+      fg = AppColors.amber700;
+      border = AppColors.amber300;
+      hint = '요청 중';
+    } else {
+      bg = Colors.white;
+      fg = AppColors.slate700;
+      border = AppColors.slate400;
+      hint = '직접 오더';
+    }
+
+    return InkWell(
+      onTap: (already || loading) ? null : () => _request(modality),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: bg,
+          border: Border.all(color: border),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (loading)
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: AppColors.amber700,
+                ),
+              )
+            else
+              Icon(icon, size: 16, color: fg),
+            const SizedBox(height: 4),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.bold, color: fg)),
+            const SizedBox(height: 2),
+            Text(hint,
+                style: TextStyle(
+                    fontSize: 9, color: fg.withAlpha(180))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 의사 직접 오더 그룹 — slate 톤 (이미 만들어진 manual SR 카드 — _DirectOrderPanel과는 별개)
 class _ManualOrderGroup extends StatelessWidget {
   final List<AIRec> recs;
   final String encounterId;
   final Map<String, ModalSummary> modalResults;
+  final PatientInfo patient;
   const _ManualOrderGroup({
     required this.recs,
     required this.encounterId,
     required this.modalResults,
+    required this.patient,
   });
 
   @override
@@ -435,6 +638,7 @@ class _ManualOrderGroup extends StatelessWidget {
                     rec: recs[i],
                     encounterId: encounterId,
                     manual: true,
+                    patient: patient,
                     modal: modalResults[recs[i].modality],
                   ),
                 ],
@@ -453,9 +657,11 @@ class _RecCard extends ConsumerStatefulWidget {
   final String encounterId;
   final bool manual;
   final ModalSummary? modal; // 해당 모달의 raw 결과 (검사결과지 버튼이 사용)
+  final PatientInfo patient; // 인적사항 + subject_id (검사결과지 헤더 + CXR 이미지용)
   const _RecCard({
     required this.rec,
     required this.encounterId,
+    required this.patient,
     this.manual = false,
     this.modal,
   });
@@ -491,19 +697,22 @@ class _RecCardState extends ConsumerState<_RecCard> {
     }
   }
 
-  // "검사결과지" 버튼 핸들러 — modality별로 실 데이터 전달.
-  // patient_name/age 등은 encounter에서 와야 하는데 RecCard에 없으니 placeholder.
-  // TODO: PatientDetailPage 차원에서 환자 정보를 RecCard까지 흘려주기.
+  // "검사결과지" 버튼 핸들러 — modality별로 실 데이터 + 환자 인적사항 전달.
   void _openResultSheet(BuildContext context, String modality) {
     final modal = widget.modal;
-    final patientId = widget.encounterId.substring(0, 8);
+    final p = widget.patient;
+    final patientName = p.name ?? '환자';
+    final age = p.age ?? 0;
+    final sex = p.sex;
+    // 차트 헤더용 ID — subject_id 우선, 없으면 encounter UUID 앞 8자리
+    final patientId = p.subjectId ?? widget.encounterId.substring(0, 8);
 
     if (modality == 'ECG') {
       showEcgClinicalSheet(
         context,
-        patientName: '환자',
-        age: 0,
-        sex: 'M',
+        patientName: patientName,
+        age: age,
+        sex: sex,
         patientId: patientId,
         waveform: modal?.ecgWaveform,
         ecgVitals: modal?.ecgVitals,
@@ -512,12 +721,13 @@ class _RecCardState extends ConsumerState<_RecCard> {
     } else if (modality == 'CXR') {
       showCxrClinicalSheet(
         context,
-        patientName: '환자',
-        age: 0,
-        sex: 'M',
+        patientName: patientName,
+        age: age,
+        sex: sex,
         patientId: patientId,
-        subjectId: null, // TODO: encounter.subject_id
+        subjectId: p.subjectId, // ⭐ 실 subject_id 전달 → /assets/cxr/{id} 이미지 로드
         measurements: modal?.cxrMeasurements,
+        metadata: modal?.cxrMetadata,
         findingsText: modal?.cxrFindingsText ?? const [],
         impression: modal?.cxrImpression,
         summary: modal?.summary,
@@ -526,9 +736,9 @@ class _RecCardState extends ConsumerState<_RecCard> {
     } else if (modality == 'LAB') {
       showLabClinicalSheet(
         context,
-        patientName: '환자',
-        age: 0,
-        sex: 'M',
+        patientName: patientName,
+        age: age,
+        sex: sex,
         patientId: patientId,
         labSummary: modal?.labSummary ?? const [],
         prognosis6h: modal?.prognosis6h,
@@ -767,10 +977,74 @@ class _AllDoneNotice extends StatelessWidget {
   }
 }
 
-// 모달 결과 섹션
+// 모달 결과 섹션 — 완료된 각 모달마다 "검사결과지" 버튼 (풀시트 다이얼로그 열기)
+// 웹 PatientDetailPage 검사결과 탭과 동일 패턴.
 class _ModalResultsSection extends StatelessWidget {
   final Map<String, ModalSummary> modalResults;
-  const _ModalResultsSection({required this.modalResults});
+  final PatientInfo patient;
+  const _ModalResultsSection({
+    required this.modalResults,
+    required this.patient,
+  });
+
+  void _openSheet(BuildContext context, ModalSummary m) {
+    final patientName = patient.name ?? '환자';
+    final age = patient.age ?? 0;
+    final sex = patient.sex;
+    final patientId = patient.subjectId ?? '';
+
+    if (m.modality == 'ECG') {
+      showEcgClinicalSheet(
+        context,
+        patientName: patientName,
+        age: age,
+        sex: sex,
+        patientId: patientId,
+        waveform: m.ecgWaveform,
+        ecgVitals: m.ecgVitals,
+        findings: m.findings,
+      );
+    } else if (m.modality == 'CXR') {
+      showCxrClinicalSheet(
+        context,
+        patientName: patientName,
+        age: age,
+        sex: sex,
+        patientId: patientId,
+        subjectId: patient.subjectId,
+        measurements: m.cxrMeasurements,
+        metadata: m.cxrMetadata,
+        findingsText: m.cxrFindingsText,
+        impression: m.cxrImpression,
+        summary: m.summary,
+        riskLevel: m.riskLevel,
+      );
+    } else if (m.modality == 'LAB') {
+      showLabClinicalSheet(
+        context,
+        patientName: patientName,
+        age: age,
+        sex: sex,
+        patientId: patientId,
+        labSummary: m.labSummary,
+        prognosis6h: m.prognosis6h,
+        summary: m.summary,
+        riskLevel: m.riskLevel,
+      );
+    }
+  }
+
+  IconData _icon(String modality) => switch (modality) {
+        'ECG' => Icons.monitor_heart_outlined,
+        'CXR' => Icons.image_outlined,
+        _ => Icons.science_outlined,
+      };
+
+  String _label(String modality) => switch (modality) {
+        'ECG' => '심전도 12-Lead',
+        'CXR' => '흉부 X-ray',
+        _ => '혈액 검사',
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -784,7 +1058,7 @@ class _ModalResultsSection extends StatelessWidget {
               Icon(Icons.science_outlined,
                   size: 14, color: AppColors.slate600),
               SizedBox(width: 4),
-              Text('검사 결과 요약',
+              Text('검사 결과',
                   style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.bold,
@@ -808,28 +1082,71 @@ class _ModalResultsSection extends StatelessWidget {
           for (final m in modalResults.values) ...[
             Container(
               margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
                   color: Colors.white,
                   border: Border.all(color: AppColors.slate200),
                   borderRadius: BorderRadius.circular(4)),
-              child: Row(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 3),
-                    color: m.isDone
-                        ? AppColors.emerald600
-                        : AppColors.slate500,
-                    child: Text(m.modality,
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold)),
+                  // 상단 — modality 뱃지 + 라벨 + 검사결과지 버튼
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 3),
+                          color: m.isDone
+                              ? AppColors.emerald600
+                              : AppColors.slate500,
+                          child: Text(m.modality,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                        const SizedBox(width: 8),
+                        Icon(_icon(m.modality),
+                            size: 14, color: AppColors.slate600),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            _label(m.modality),
+                            style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.slate800),
+                          ),
+                        ),
+                        if (m.isDone)
+                          TextButton.icon(
+                            onPressed: () => _openSheet(context, m),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 4),
+                              minimumSize: Size.zero,
+                              tapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                              foregroundColor: AppColors.vunoCyanDim,
+                              side: const BorderSide(
+                                  color: AppColors.vunoCyanDim),
+                              shape: const RoundedRectangleBorder(),
+                            ),
+                            icon: const Icon(Icons.description_outlined,
+                                size: 12),
+                            label: const Text('검사결과지',
+                                style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold)),
+                          ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
+                  // 하단 — 한 줄 요약
+                  Padding(
+                    padding:
+                        const EdgeInsets.fromLTRB(10, 0, 10, 10),
                     child: Text(
                       m.summary ?? '결과 없음',
                       style: const TextStyle(

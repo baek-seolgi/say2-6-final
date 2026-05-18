@@ -240,6 +240,18 @@ export default function TriagePage() {
       const patientId: string | undefined = data?.patient_id;
       const primaryModality: string | undefined = data?.primary_modality;
       const primarySrId: string | undefined = data?.service_request_id;
+
+      // 중복 환자 가드 — backend가 기존 active encounter 반환한 경우
+      if (data?.duplicate === true && encounterId) {
+        alert("이미 진료 중인 환자입니다. 기존 진료 화면으로 이동합니다.");
+        const params = new URLSearchParams();
+        params.set("encounter_id", encounterId);
+        if (patientId) params.set("patient_id", patientId);
+        if (selectedId) params.set("patient", selectedId);
+        navigate(`/dashboard?${params.toString()}`);
+        return;
+      }
+
       if (encounterId) {
         const params = new URLSearchParams();
         params.set("encounter_id", encounterId);

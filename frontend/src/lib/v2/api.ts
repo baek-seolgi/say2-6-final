@@ -60,11 +60,15 @@ export type ReportStatus = "preliminary" | "reviewed" | "signed" | "amended";
 export interface ReportRow {
   id: number;
   encounter_id: string;
+  subject_id?: string | null;       // backend encounters JOIN — 데모 환자 매칭용
+  patient_name?: string | null;     // 알림 패널 row 헤더
+  chief_complaint?: string | null;  // 알림 패널 row 본문
   status: ReportStatus;
   ai_diagnosis?: string;
   physician_edits?: string | null;
   signed_by?: string | null;
   signed_at?: string | null;
+  created_at?: string | null;       // 알림 패널 정렬·시각 표시
   ai_risk_level?: string;
 }
 

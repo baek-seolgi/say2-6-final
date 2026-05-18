@@ -42,6 +42,9 @@ async def list_encounters(status: str = "active", limit: int = 50):
     - report_status: 'preliminary'/'reviewed'/'signed' (소견서 있을 때만)
     - ai_risk_level: 'routine'/'urgent'/'critical' (소견서 있을 때만)
     """
+    # 같은 subject_id(중복 환자)는 최신 1건만 노출.
+    # subject_id가 null인 row(MIMIC ID 없는 일반 입력)는 encounter_id::text로 fallback
+    # → DISTINCT-ON 키가 unique해져서 dedup이 no-op.
     rows = await db.fetch(
         """
         SELECT
@@ -56,9 +59,16 @@ async def list_encounters(status: str = "active", limit: int = 50):
             e.status,
             dr.status         AS report_status,
             dr.ai_risk_level  AS ai_risk_level
-        FROM encounters e
+        FROM (
+            SELECT DISTINCT ON (COALESCE(subject_id, encounter_id::text))
+                   encounter_id, patient_id, subject_id, patient_name,
+                   patient_age, patient_gender, chief_complaint,
+                   started_at, status
+            FROM encounters
+            WHERE ($1 = 'all' OR status = $1)
+            ORDER BY COALESCE(subject_id, encounter_id::text), started_at DESC
+        ) e
         LEFT JOIN diagnostic_reports dr ON dr.encounter_id = e.encounter_id
-        WHERE ($1 = 'all' OR e.status = $1)
         ORDER BY e.started_at DESC
         LIMIT $2
         """,
@@ -88,11 +98,40 @@ _STAGE_MAP: dict[str, tuple[str, str, int]] = {
 
 @router.get("/{encounter_id}")
 async def get_encounter(encounter_id: str):
-    """단일 Encounter 조회."""
+    """단일 Encounter 조회 (FHIR R4)."""
     try:
         return await fhir.read("Encounter", encounter_id)
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/{encounter_id}/patient-info")
+async def get_encounter_patient_info(encounter_id: str):
+    """
+    경량 환자 정보 — 모달 검사결과지 헤더용.
+
+    /list 와 동일한 shape를 단건으로 돌려줘 모바일·웹이 한 번에 인적사항을 받음.
+    subject_id 가 있어야 /assets/cxr/{subject_id} 이미지 로드 가능.
+    """
+    row = await db.fetchone(
+        """
+        SELECT
+            e.encounter_id,
+            e.subject_id,
+            e.patient_name,
+            e.patient_age,
+            e.patient_gender,
+            e.chief_complaint,
+            dr.ai_risk_level
+        FROM encounters e
+        LEFT JOIN diagnostic_reports dr ON dr.encounter_id = e.encounter_id
+        WHERE e.encounter_id = $1
+        """,
+        encounter_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="encounter not found")
+    return dict(row)
 
 
 @router.get("/{encounter_id}/observations")

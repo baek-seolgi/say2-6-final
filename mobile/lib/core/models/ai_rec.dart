@@ -103,6 +103,9 @@ class ModalSummary {
   // CXR 전용
   Map<String, dynamic>? get cxrMeasurements =>
       (raw?['measurements'] as Map?)?.cast<String, dynamic>();
+  // metadata 에 image_size, mask_base64, view 등이 들어있어 풀시트 오버레이에 사용
+  Map<String, dynamic>? get cxrMetadata =>
+      (raw?['metadata'] as Map?)?.cast<String, dynamic>();
   String? get cxrImpression => raw?['impression'] as String?;
   List<String> get cxrFindingsText {
     final ft = raw?['findings_text'];
