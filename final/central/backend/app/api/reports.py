@@ -281,3 +281,16 @@ async def list_reports(status: Optional[str] = None, limit: int = 50):
     종합소견서 페이지 / 환자 목록의 검토·서명 대기 리스트용.
     """
     return await ops_reports.list_recent(limit=limit, status=status)
+
+
+@router.get("/unsigned-count")
+async def get_unsigned_count():
+    """
+    미서명 소견서 개수 — AppShell 상단 알림 뱃지 자동 갱신용.
+    의사가 화면 어디서든 "검토·서명 대기 중인 소견서가 N건"을 한눈에 보게.
+    """
+    from app.db import client as _db
+    row = await _db.fetchone(
+        "SELECT COUNT(*)::int AS n FROM diagnostic_reports WHERE status <> 'signed'"
+    )
+    return {"unsigned_count": int(row["n"] if row else 0)}

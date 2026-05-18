@@ -98,11 +98,30 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("FHIR retry worker 시작 실패: %s", e)
 
+    # FCM 푸시 — credentials 없으면 graceful no-op
+    try:
+        from app.clients import fcm
+        fcm.init()
+    except Exception as e:
+        logger.warning("FCM init 실패 (푸시 비활성화): %s", e)
+
+    # 미서명 소견서 리마인더 워커 — 1분마다 폴링
+    # 5분 경과 + 미서명인 소견서에 FCM 조용한 알림 발송
+    reminder_task = None
+    try:
+        from app.agent.report_reminder_worker import report_reminder_loop
+        reminder_task = asyncio.create_task(report_reminder_loop())
+        logger.info("✓ Report reminder worker scheduled (interval=60s)")
+    except Exception as e:
+        logger.warning("Report reminder worker 시작 실패: %s", e)
+
     yield
 
     # Shutdown
     if retry_task and not retry_task.done():
         retry_task.cancel()
+    if reminder_task and not reminder_task.done():
+        reminder_task.cancel()
     try:
         await db.close_pool()
     except Exception as e:

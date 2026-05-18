@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS diagnostic_reports (
     status             VARCHAR(20) NOT NULL DEFAULT 'preliminary',  -- preliminary / signed / amended
     signed_by          VARCHAR(64),
     signed_at          TIMESTAMPTZ,
+    last_reminder_at   TIMESTAMPTZ,                                -- 5분 미서명 FCM 리마인더 발송 시각 (스팸 방지)
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (encounter_id)  -- 1 encounter = 1 소견서 (재생성 시 UPSERT)
@@ -85,6 +86,10 @@ CREATE TABLE IF NOT EXISTS diagnostic_reports (
 CREATE INDEX IF NOT EXISTS idx_dr_enc     ON diagnostic_reports(encounter_id);
 CREATE INDEX IF NOT EXISTS idx_dr_subject ON diagnostic_reports(subject_id);
 CREATE INDEX IF NOT EXISTS idx_dr_status  ON diagnostic_reports(status, created_at DESC);
+-- 리마인더 워커가 미서명 + 시간 경과한 row 빠르게 찾도록 부분 인덱스
+CREATE INDEX IF NOT EXISTS idx_dr_unsigned_reminder
+    ON diagnostic_reports(created_at, last_reminder_at)
+    WHERE status <> 'signed';
 
 -- updated_at 자동 갱신 트리거
 CREATE OR REPLACE FUNCTION _bump_updated_at() RETURNS TRIGGER AS $$

@@ -35,6 +35,8 @@ export default function PatientDetailPage() {
   const [recs, setRecs] = useState<AIRec[]>([]);
   const [approving, setApproving] = useState<Set<string>>(new Set());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // WS 연결 상태 — 'open' = 실시간 연결, 'close'/'error' = 재접속 중
+  const [wsStatus, setWsStatus] = useState<"open" | "close" | "error" | null>(null);
 
   const poll = useCallback(async () => {
     if (!encounterId) return;
@@ -55,10 +57,14 @@ export default function PatientDetailPage() {
     poll();
     // WebSocket 구독 — backend가 broadcast() 호출하면 즉시 받음 (push)
     // /ws/encounter/{id}에서 modal_completed / ready_for_report / report_signed 등.
-    const handle = subscribeEncounter(encounterId, () => {
-      // 어떤 이벤트든 도착하면 최신 상태 즉시 가져오기
-      poll();
-    });
+    const handle = subscribeEncounter(
+      encounterId,
+      () => {
+        // 어떤 이벤트든 도착하면 최신 상태 즉시 가져오기
+        poll();
+      },
+      (s) => setWsStatus(s),
+    );
     // 폴링은 fallback — WS 끊겼을 때 대비. 10s로 늦춤 (원래 2s).
     pollRef.current = setInterval(poll, 10_000);
     return () => {
@@ -153,6 +159,7 @@ export default function PatientDetailPage() {
             <div className="px-4 py-2.5 border-b border-slate-200 bg-slate-50 flex items-center gap-2">
               <span className="text-sm font-bold text-slate-900">검사 결과</span>
               <span className="text-[10px] text-slate-400 tracking-wider uppercase">Examination Results</span>
+              <LiveBadge status={wsStatus} className="ml-auto" />
             </div>
             <Tabs
               value={tab}
@@ -226,6 +233,36 @@ export default function PatientDetailPage() {
         />
       )}
     </AppShell>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WS 실시간 연결 상태 뱃지
+   ═══════════════════════════════════════════════════════════ */
+function LiveBadge({
+  status,
+  className,
+}: {
+  status: "open" | "close" | "error" | null;
+  className?: string;
+}) {
+  const isLive = status === "open";
+  const label = isLive ? "LIVE" : status === null ? "연결 중…" : "재연결 중…";
+  const dot = isLive ? "bg-emerald-500" : "bg-slate-300";
+  const ring = isLive ? "ring-emerald-400/40" : "ring-slate-300/40";
+  const text = isLive ? "text-emerald-700" : "text-slate-500";
+  const bg = isLive ? "bg-emerald-50 border-emerald-200" : "bg-slate-50 border-slate-200";
+  return (
+    <span
+      title={isLive ? "백엔드와 실시간 연결됨 (WebSocket)" : "재연결 시도 중 — 10초 폴링으로 fallback"}
+      className={cn(
+        "inline-flex items-center gap-1.5 h-5 px-2 border rounded-full text-[10px] font-bold tracking-wider",
+        bg, text, className,
+      )}
+    >
+      <span className={cn("inline-block h-1.5 w-1.5 rounded-full ring-2", dot, ring, isLive && "animate-pulse")} />
+      {label}
+    </span>
   );
 }
 

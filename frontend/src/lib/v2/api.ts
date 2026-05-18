@@ -184,6 +184,12 @@ export async function listReports(status?: string): Promise<ReportRow[]> {
   return res ?? [];
 }
 
+/* ── GET /reports/unsigned-count — 미서명 소견서 개수 (헤더 뱃지용) ── */
+export async function getUnsignedReportCount(): Promise<number> {
+  const res = await jsonFetch<{ unsigned_count: number }>(`/reports/unsigned-count`);
+  return res?.unsigned_count ?? 0;
+}
+
 /* ── POST /orders/{sr_id}/approve — AI 권고 승인 → 모달 실행 ── */
 export async function approveOrder(srId: string): Promise<boolean> {
   const res = await jsonFetch<{ status?: string }>(`/orders/${srId}/approve`, {

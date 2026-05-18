@@ -209,3 +209,17 @@ migrations:
       CREATE INDEX IF NOT EXISTS idx_dt_platform ON device_tokens(platform);
       -- 활성 토큰만 빠르게 — 30일 내 last_seen
       CREATE INDEX IF NOT EXISTS idx_dt_active   ON device_tokens(last_seen_at DESC);
+
+  - version: "009"
+    description: "diagnostic_reports.last_reminder_at — 5분 미서명 리마인더 워커용"
+    sql: |
+      -- 의사가 소견서를 5분간 서명 안 하면 FCM 리마인더 푸시.
+      -- 같은 row에 또 보내는 걸 방지하려고 last_reminder_at 컬럼으로 발송 시각 기록.
+      -- NULL이면 아직 한 번도 보낸 적 없음.
+      ALTER TABLE diagnostic_reports
+        ADD COLUMN IF NOT EXISTS last_reminder_at TIMESTAMPTZ;
+
+      -- 워커가 미서명 + 5분 경과한 row를 빠르게 찾도록 부분 인덱스
+      CREATE INDEX IF NOT EXISTS idx_dr_unsigned_reminder
+        ON diagnostic_reports(created_at, last_reminder_at)
+        WHERE status <> 'signed';
