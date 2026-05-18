@@ -1,0 +1,1253 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  say2-6team regional security stack - KMS, Security Groups, IAM Roles,
+  Cognito baseline, and security-related exports.
+  Deploy this stack in ap-northeast-2.
+
+Metadata:
+  Project:
+    Name: say2-6team
+    Purpose: Regional security baseline for ER multimodal AI system
+  Notes:
+    - This stack depends on network-stack exports.
+    - Endpoint SG is already created by network-stack and must not be duplicated here.
+    - Custom NACLs are intentionally excluded from this version.
+    - Secrets Manager Secret resources are intentionally not created in this stack.
+    - Aurora/DB Secret should be created by data-stack and later exported.
+    - IAM policies use project-prefix wildcards during dev and should be tightened after data-stack exports exact ARNs.
+    - Cognito is included as a baseline, but callback/logout URLs are placeholders until the frontend/CloudFront domain is finalized.
+    - RAG service calls Bedrock only for query embedding generation.
+    - RAG service searches ChromaDB/Vector DB and returns Top-K similar cases only.
+    - Orchestrator remains responsible for patient request handling, modal orchestration, final Bedrock synthesis, and final DB write.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: say2-6team
+    Description: Project prefix used for resource naming, exports, and tags.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment environment.
+
+  Owner:
+    Type: String
+    Default: yji
+    AllowedValues:
+      - unassigned
+      - wja
+      - lji
+      - hkt
+      - yji
+    Description: Resource owner tag value.
+
+  CognitoCallbackUrl:
+    Type: String
+    Default: http://localhost:3000/callback
+    Description: >
+      Temporary callback URL for Cognito Hosted UI/OAuth.
+      Update this after the CloudFront/custom frontend domain is finalized.
+
+  CognitoLogoutUrl:
+    Type: String
+    Default: http://localhost:3000/logout
+    Description: >
+      Temporary logout URL for Cognito Hosted UI/OAuth.
+      Update this after the CloudFront/custom frontend domain is finalized.
+
+  RateLimitPerFiveMinutes:
+    Type: Number
+    Default: 2000
+    MinValue: 100
+    Description: >
+      WAF rate limit per IP per 5 minutes.
+      Current rule is Count mode in dev. Change Action to Block after validation.
+
+Resources:
+  ###########################################################################
+  # KMS
+  #
+  # Purpose:
+  #   - Common project KMS key for Aurora, S3, Secrets Manager, and other
+  #     security-sensitive resources.
+  #
+  # Alias:
+  #   - alias/ is required by AWS KMS alias naming rules.
+  #   - say2-6team-kms-key is the team-agreed project key name.
+  ###########################################################################
+  ProjectKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "${ProjectName} common KMS key"
+      EnableKeyRotation: true
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAccountLevelKMSAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-kms-key"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ProjectKmsAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${ProjectName}-kms-key"
+      TargetKeyId: !Ref ProjectKmsKey
+
+  ###########################################################################
+  # Security Groups
+  #
+  # Responsibility split:
+  #   - Orchestrator calls modal services and collects short modal summaries.
+  #   - Orchestrator sends modal summaries to RAG service.
+  #   - RAG service creates embeddings, queries ChromaDB/Vector DB,
+  #     and returns Top-K similar cases only.
+  #   - Orchestrator combines modal outputs + Top-K RAG results and performs
+  #     final Bedrock synthesis and final DB write.
+  #
+  # ChromaDB:
+  #   - ChromaDB/Vector DB is separated behind chroma-sg.
+  #   - Only rag-sg can access chroma-sg on port 8000.
+  #
+  # NACLs:
+  #   - Not included in this version.
+  #   - Add Data subnet NACL hardening later after ECS/DB/Endpoint connectivity
+  #     is verified.
+  ###########################################################################
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-alb-sg"
+      GroupDescription: Security group for ALB
+      VpcId: !ImportValue say2-6team-vpc-id
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-alb-sg"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  CentralSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-central-sg"
+      GroupDescription: Security group for ECS orchestrator service
+      VpcId: !ImportValue say2-6team-vpc-id
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-central-sg"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ECGSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-ecg-sg"
+      GroupDescription: Security group for ECG ECS service
+      VpcId: !ImportValue say2-6team-vpc-id
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ecg-sg"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  CXRSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-cxr-sg"
+      GroupDescription: Security group for CXR ECS service
+      VpcId: !ImportValue say2-6team-vpc-id
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-cxr-sg"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  LABSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-lab-sg"
+      GroupDescription: Security group for LAB ECS service
+      VpcId: !ImportValue say2-6team-vpc-id
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-lab-sg"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  RAGSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-rag-sg"
+      GroupDescription: Security group for RAG API service
+      VpcId: !ImportValue say2-6team-vpc-id
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-rag-sg"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ChromaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-chroma-sg"
+      GroupDescription: Security group for ChromaDB or Vector DB service
+      VpcId: !ImportValue say2-6team-vpc-id
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-chroma-sg"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  HAPISecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-hapi-sg"
+      GroupDescription: Security group for HAPI FHIR EC2 service
+      VpcId: !ImportValue say2-6team-vpc-id
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-hapi-sg"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  AuroraSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-aurora-sg"
+      GroupDescription: Security group for Aurora PostgreSQL
+      VpcId: !ImportValue say2-6team-vpc-id
+      SecurityGroupEgress: []
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-aurora-sg"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ###########################################################################
+  # SG Ingress Rules
+  ###########################################################################
+  ALBIngressHTTPS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ALBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: Allow HTTPS to ALB. TODO hardening - restrict to origin-facing prefix list if required.
+
+  CentralIngressFromALB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref CentralSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Description: ALB to orchestrator FastAPI
+
+  ECGIngressFromCentral:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ECGSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8001
+      ToPort: 8001
+      SourceSecurityGroupId: !Ref CentralSecurityGroup
+      Description: Orchestrator to ECG service
+
+  CXRIngressFromCentral:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref CXRSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8002
+      ToPort: 8002
+      SourceSecurityGroupId: !Ref CentralSecurityGroup
+      Description: Orchestrator to CXR service
+
+  LABIngressFromCentral:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref LABSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8003
+      ToPort: 8003
+      SourceSecurityGroupId: !Ref CentralSecurityGroup
+      Description: Orchestrator to LAB service
+
+  RAGIngressFromCentral:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RAGSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      SourceSecurityGroupId: !Ref CentralSecurityGroup
+      Description: Orchestrator to RAG API service
+
+  ChromaIngressFromRAG:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ChromaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      SourceSecurityGroupId: !Ref RAGSecurityGroup
+      Description: RAG service to ChromaDB or Vector DB service
+
+  HAPIIngressFromCentral:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref HAPISecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref CentralSecurityGroup
+      Description: Orchestrator to HAPI FHIR
+
+  AuroraIngressFromCentral:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AuroraSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref CentralSecurityGroup
+      Description: Orchestrator to Aurora PostgreSQL
+
+  AuroraIngressFromHAPI:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AuroraSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref HAPISecurityGroup
+      Description: HAPI to Aurora PostgreSQL
+
+  ###########################################################################
+  # SG Egress Rules
+  #
+  # S3 Gateway Endpoint note:
+  #   Security Groups cannot directly reference a Gateway Endpoint.
+  #   During dev, HTTPS egress to 0.0.0.0/0 is allowed for S3 Gateway access.
+  #   App/Data subnets have no IGW/NAT default route, so direct internet egress
+  #   is still blocked at the routing layer.
+  #
+  # Hardening:
+  #   Replace broad HTTPS egress with managed prefix lists or stricter rules
+  #   if the team decides to enforce stronger egress control.
+  ###########################################################################
+  ALBEgressToCentral:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ALBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      DestinationSecurityGroupId: !Ref CentralSecurityGroup
+      Description: ALB to orchestrator
+
+  CentralEgressToECG:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref CentralSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8001
+      ToPort: 8001
+      DestinationSecurityGroupId: !Ref ECGSecurityGroup
+      Description: Orchestrator to ECG
+
+  CentralEgressToCXR:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref CentralSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8002
+      ToPort: 8002
+      DestinationSecurityGroupId: !Ref CXRSecurityGroup
+      Description: Orchestrator to CXR
+
+  CentralEgressToLAB:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref CentralSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8003
+      ToPort: 8003
+      DestinationSecurityGroupId: !Ref LABSecurityGroup
+      Description: Orchestrator to LAB
+
+  CentralEgressToRAG:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref CentralSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      DestinationSecurityGroupId: !Ref RAGSecurityGroup
+      Description: Orchestrator to RAG API service
+
+  CentralEgressToHAPI:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref CentralSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      DestinationSecurityGroupId: !Ref HAPISecurityGroup
+      Description: Orchestrator to HAPI
+
+  CentralEgressToAurora:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref CentralSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref AuroraSecurityGroup
+      Description: Orchestrator to Aurora
+
+  CentralEgressToEndpoints:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref CentralSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !ImportValue say2-6team-endpoints-sg
+      Description: Orchestrator to Interface VPC Endpoints
+
+  CentralEgressHTTPSForS3Gateway:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref CentralSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: HTTPS egress for S3 Gateway Endpoint during dev
+
+  ECGEgressToEndpoints:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ECGSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !ImportValue say2-6team-endpoints-sg
+      Description: ECG to Interface VPC Endpoints
+
+  CXREgressToEndpoints:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref CXRSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !ImportValue say2-6team-endpoints-sg
+      Description: CXR to Interface VPC Endpoints
+
+  LABEgressToEndpoints:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LABSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !ImportValue say2-6team-endpoints-sg
+      Description: LAB to Interface VPC Endpoints
+
+  ECGEgressHTTPSForS3Gateway:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ECGSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: ECG HTTPS egress for S3 Gateway Endpoint during dev
+
+  CXREgressHTTPSForS3Gateway:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref CXRSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: CXR HTTPS egress for S3 Gateway Endpoint during dev
+
+  LABEgressHTTPSForS3Gateway:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LABSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: LAB HTTPS egress for S3 Gateway Endpoint during dev
+
+  RAGEgressToChroma:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref RAGSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      DestinationSecurityGroupId: !Ref ChromaSecurityGroup
+      Description: RAG service to ChromaDB or Vector DB service
+
+  RAGEgressToEndpoints:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref RAGSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !ImportValue say2-6team-endpoints-sg
+      Description: RAG to Interface VPC Endpoints for Bedrock embedding and Secrets Manager and KMS and CloudWatch Logs
+
+  RAGEgressHTTPSForS3Gateway:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref RAGSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: RAG HTTPS egress for S3 Gateway Endpoint during dev
+
+  ChromaEgressToEndpoints:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ChromaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !ImportValue say2-6team-endpoints-sg
+      Description: ChromaDB to Interface VPC Endpoints for logs/secrets if needed
+
+  ChromaEgressHTTPSForS3Gateway:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ChromaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: ChromaDB HTTPS egress for S3 backup/snapshot during dev
+
+  HAPIEgressToAurora:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref HAPISecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref AuroraSecurityGroup
+      Description: HAPI to Aurora PostgreSQL
+
+  HAPIEgressToEndpoints:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref HAPISecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !ImportValue say2-6team-endpoints-sg
+      Description: HAPI to Interface VPC Endpoints for logs/secrets if needed
+
+  ###########################################################################
+  # IAM Roles
+  #
+  # Secrets Manager strategy:
+  #   - This stack does NOT create DB Secret resources.
+  #   - data-stack should create/export the Aurora Secret ARN.
+  #   - During dev, task roles allow GetSecretValue on say2-6team/* secrets.
+  #   - After data-stack exports exact Secret ARNs, replace prefix wildcard
+  #     with exact ARNs for least privilege.
+  #
+  # S3 strategy:
+  #   - During dev, task roles allow access to S3 buckets matching
+  #     say2-6team-*.
+  #   - After data-stack exports exact bucket ARNs, replace wildcard resources
+  #     with exact bucket ARNs.
+  #
+  # Bedrock strategy:
+  #   - During dev, Bedrock Resource is "*" because provider/model IDs may
+  #     change during integration.
+  #   - After the model list is finalized, restrict to selected model ARNs
+  #     if required by the security review.
+  ###########################################################################
+  ECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-ecs-execution-extra-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadTaskDefinitionSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*"
+              - Sid: DecryptTaskDefinitionSecrets
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !GetAtt ProjectKmsKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ecs-execution-role"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  OrchestratorTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-orchestrator-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-orchestrator-task-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeFinalBedrockSynthesis
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: "*"
+              - Sid: ReadProjectSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*"
+              - Sid: UseProjectKmsKey
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                Resource: !GetAtt ProjectKmsKey.Arn
+              - Sid: ProjectS3AccessDev
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ProjectName}-*"
+                  - !Sub "arn:aws:s3:::${ProjectName}-*/*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-orchestrator-task-role"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ECGTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecg-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-ecg-task-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadProjectSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*"
+              - Sid: UseProjectKmsKey
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                Resource: !GetAtt ProjectKmsKey.Arn
+              - Sid: ProjectS3AccessDev
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ProjectName}-*"
+                  - !Sub "arn:aws:s3:::${ProjectName}-*/*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ecg-task-role"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  CXRTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-cxr-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-cxr-task-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadProjectSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*"
+              - Sid: UseProjectKmsKey
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                Resource: !GetAtt ProjectKmsKey.Arn
+              - Sid: ProjectS3AccessDev
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ProjectName}-*"
+                  - !Sub "arn:aws:s3:::${ProjectName}-*/*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-cxr-task-role"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  LABTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-lab-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-lab-task-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadProjectSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*"
+              - Sid: UseProjectKmsKey
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                Resource: !GetAtt ProjectKmsKey.Arn
+              - Sid: ProjectS3AccessDev
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ProjectName}-*"
+                  - !Sub "arn:aws:s3:::${ProjectName}-*/*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-lab-task-role"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  RAGTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-rag-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-rag-task-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              #################################################################
+              # RAG service responsibility:
+              #   - Receive modal summaries as query from orchestrator.
+              #   - Create query embedding with Bedrock.
+              #   - Search ChromaDB/Vector DB.
+              #   - Return Top-K similar cases to orchestrator.
+              #   - Store current case embedding/search log.
+              #
+              # Orchestrator responsibility:
+              #   - Final Bedrock synthesis.
+              #   - Final DB write.
+              #################################################################
+              - Sid: InvokeBedrockEmbeddingModel
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: "*"
+              - Sid: ReadProjectSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*"
+              - Sid: UseProjectKmsKey
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                Resource: !GetAtt ProjectKmsKey.Arn
+              - Sid: ProjectS3AccessDev
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ProjectName}-*"
+                  - !Sub "arn:aws:s3:::${ProjectName}-*/*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-rag-task-role"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+
+  ###########################################################################
+  # WAF (Regional — ALB 직접 연결)
+  #
+  # CloudFront를 사용하지 않으므로 Scope=REGIONAL로 서울 리전에 배포.
+  # ALB ARN은 compute-stack 배포 후 WebACLAssociation으로 연결.
+  # 초기 dev 단계에서는 모든 규칙이 Count 모드 (차단 없이 관찰).
+  ###########################################################################
+  RegionalWebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${ProjectName}-alb-waf"
+      Description: !Sub "${ProjectName} regional WAF for ALB"
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${ProjectName}-alb-waf"
+        SampledRequestsEnabled: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-alb-waf"
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+      Rules:
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 10
+          OverrideAction:
+            Count: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesCommonRuleSet
+            SampledRequestsEnabled: true
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 20
+          OverrideAction:
+            Count: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesKnownBadInputsRuleSet
+            SampledRequestsEnabled: true
+        - Name: AWSManagedRulesAmazonIpReputationList
+          Priority: 30
+          OverrideAction:
+            Count: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesAmazonIpReputationList
+            SampledRequestsEnabled: true
+        - Name: RateLimitPerIP
+          Priority: 100
+          Action:
+            Count: {}
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref RateLimitPerFiveMinutes
+              AggregateKeyType: IP
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitPerIP
+            SampledRequestsEnabled: true
+
+  ###########################################################################
+  # Cognito
+  #
+  # Current version:
+  #   - Cognito is included to give frontend/backend teams stable IDs early.
+  #   - CallbackUrl and LogoutUrl default to localhost placeholders.
+  #
+  # Why not final:
+  #   - Final frontend domain and CloudFront domain may not be available yet.
+  #
+  # Next steps:
+  #   - After frontend/CloudFront domain is finalized, update this stack with
+  #     the final HTTPS callback/logout URLs.
+  #   - Review OAuth flow/scopes with frontend implementation.
+  #   - Consider MFA only after initial login flow is working.
+  ###########################################################################
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${ProjectName}-user-pool"
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      UserPoolTags:
+        Project: !Ref ProjectName
+        Owner: !Ref Owner
+        Environment: !Ref Environment
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${ProjectName}-web-client"
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - !Ref CognitoCallbackUrl
+      LogoutURLs:
+        - !Ref CognitoLogoutUrl
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "${ProjectName}-${Environment}-${AWS::AccountId}-auth"
+      UserPoolId: !Ref CognitoUserPool
+
+Outputs:
+  ###########################################################################
+  # Security Group Exports
+  ###########################################################################
+  ALBSecurityGroupId:
+    Description: ALB Security Group ID
+    Value: !Ref ALBSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-alb-sg"
+
+  CentralSecurityGroupId:
+    Description: Orchestrator/ECS Central Security Group ID
+    Value: !Ref CentralSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-central-sg"
+
+  ECGSecurityGroupId:
+    Description: ECG service Security Group ID
+    Value: !Ref ECGSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-ecg-sg"
+
+  CXRSecurityGroupId:
+    Description: CXR service Security Group ID
+    Value: !Ref CXRSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-cxr-sg"
+
+  LABSecurityGroupId:
+    Description: LAB service Security Group ID
+    Value: !Ref LABSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-lab-sg"
+
+  RAGSecurityGroupId:
+    Description: RAG API Security Group ID
+    Value: !Ref RAGSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-rag-sg"
+
+  ChromaSecurityGroupId:
+    Description: ChromaDB or Vector DB Security Group ID
+    Value: !Ref ChromaSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-chroma-sg"
+
+  HAPISecurityGroupId:
+    Description: HAPI EC2 Security Group ID
+    Value: !Ref HAPISecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-hapi-sg"
+
+  AuroraSecurityGroupId:
+    Description: Aurora Security Group ID
+    Value: !Ref AuroraSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-aurora-sg"
+
+  ###########################################################################
+  # KMS Exports
+  ###########################################################################
+  KMSKeyId:
+    Description: KMS Key ID
+    Value: !Ref ProjectKmsKey
+    Export:
+      Name: !Sub "${ProjectName}-kms-key-id"
+
+  KMSKeyArn:
+    Description: KMS Key ARN
+    Value: !GetAtt ProjectKmsKey.Arn
+    Export:
+      Name: !Sub "${ProjectName}-kms-key-arn"
+
+  ###########################################################################
+  # IAM Role Exports
+  ###########################################################################
+  ECSExecutionRoleArn:
+    Description: ECS Execution Role ARN
+    Value: !GetAtt ECSExecutionRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-ecs-execution-role-arn"
+
+  OrchestratorTaskRoleArn:
+    Description: Orchestrator Task Role ARN
+    Value: !GetAtt OrchestratorTaskRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-orchestrator-role-arn"
+
+  ECGTaskRoleArn:
+    Description: ECG Task Role ARN
+    Value: !GetAtt ECGTaskRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-ecg-task-role-arn"
+
+  CXRTaskRoleArn:
+    Description: CXR Task Role ARN
+    Value: !GetAtt CXRTaskRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-cxr-task-role-arn"
+
+  LABTaskRoleArn:
+    Description: LAB Task Role ARN
+    Value: !GetAtt LABTaskRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-lab-task-role-arn"
+
+  RAGTaskRoleArn:
+    Description: RAG Task Role ARN
+    Value: !GetAtt RAGTaskRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-rag-task-role-arn"
+
+  ###########################################################################
+  # Cognito Exports
+  ###########################################################################
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref CognitoUserPool
+    Export:
+      Name: !Sub "${ProjectName}-cognito-user-pool-id"
+
+  CognitoUserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref CognitoUserPoolClient
+    Export:
+      Name: !Sub "${ProjectName}-cognito-user-pool-client-id"
+
+  CognitoUserPoolDomain:
+    Description: Cognito hosted UI domain prefix
+    Value: !Sub "${ProjectName}-${Environment}-${AWS::AccountId}-auth"
+    Export:
+      Name: !Sub "${ProjectName}-cognito-domain-prefix"
+
+  ###########################################################################
+  # WAF Exports
+  ###########################################################################
+  RegionalWebACLArn:
+    Description: Regional WAF WebACL ARN for ALB association
+    Value: !GetAtt RegionalWebACL.Arn
+    Export:
+      Name: !Sub "${ProjectName}-waf-arn"
+
+  RegionalWebACLId:
+    Description: Regional WAF WebACL ID
+    Value: !GetAtt RegionalWebACL.Id

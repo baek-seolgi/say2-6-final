@@ -1,0 +1,80 @@
+{
+  "Scope": "REGIONAL",
+  "DefaultAction": {
+    "Allow": {}
+  },
+  "Rules": [
+    {
+      "Name": "AWSManagedRulesCommonRuleSet",
+      "Priority": 10,
+      "OverrideAction": {
+        "Count": {}
+      },
+      "Statement": {
+        "ManagedRuleGroupStatement": {
+          "VendorName": "AWS",
+          "Name": "AWSManagedRulesCommonRuleSet"
+        }
+      },
+      "VisibilityConfig": {
+        "CloudWatchMetricsEnabled": true,
+        "MetricName": "AWSManagedRulesCommonRuleSet",
+        "SampledRequestsEnabled": true
+      }
+    },
+    {
+      "Name": "AWSManagedRulesKnownBadInputsRuleSet",
+      "Priority": 20,
+      "OverrideAction": {
+        "Count": {}
+      },
+      "Statement": {
+        "ManagedRuleGroupStatement": {
+          "VendorName": "AWS",
+          "Name": "AWSManagedRulesKnownBadInputsRuleSet"
+        }
+      },
+      "VisibilityConfig": {
+        "CloudWatchMetricsEnabled": true,
+        "MetricName": "AWSManagedRulesKnownBadInputsRuleSet",
+        "SampledRequestsEnabled": true
+      }
+    },
+    {
+      "Name": "AWSManagedRulesAmazonIpReputationList",
+      "Priority": 30,
+      "OverrideAction": {
+        "Count": {}
+      },
+      "Statement": {
+        "ManagedRuleGroupStatement": {
+          "VendorName": "AWS",
+          "Name": "AWSManagedRulesAmazonIpReputationList"
+        }
+      },
+      "VisibilityConfig": {
+        "CloudWatchMetricsEnabled": true,
+        "MetricName": "AWSManagedRulesAmazonIpReputationList",
+        "SampledRequestsEnabled": true
+      }
+    },
+    {
+      "Name": "RateLimitPerIP",
+      "Priority": 100,
+      "Action": {
+        "Count": {}
+      },
+      "Statement": {
+        "RateBasedStatement": {
+          "Limit": 2000,
+          "AggregateKeyType": "IP"
+        }
+      },
+      "VisibilityConfig": {
+        "CloudWatchMetricsEnabled": true,
+        "MetricName": "RateLimitPerIP",
+        "SampledRequestsEnabled": true
+      }
+    }
+  ]
+}
